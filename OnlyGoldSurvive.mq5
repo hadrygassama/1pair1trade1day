@@ -58,6 +58,12 @@ input int      ADXPeriod = 14;          // ADX period
 input double   MinADX = 25.0;           // Minimum ADX value
 input double   MaxADX = 50.0;           // Maximum ADX value
 
+input group    "=== RSI Filter ==="
+input bool     UseRSIFilter = true;     // RSI filter
+input int      RSIPeriod = 14;          // RSI period
+input double   RSIOverbought = 70.0;    // RSI overbought level
+input double   RSIOversold = 30.0;      // RSI oversold level
+
 input group    "=== Exit Conditions ==="
 input int      Tral = 5;             // Trailing stop (pips)
 input int      TralStart = 20;        // Trailing start (pips)
@@ -72,6 +78,7 @@ input color    TextColor = clrWhite;   // Text color
 CTrade trade;
 CiBands bollingerBands;
 CiADX adxIndicator;  // Add ADX indicator
+CiRSI rsiIndicator;  // Add RSI indicator
 string expertName = "OnlyGoldSurvive";
 datetime lastOpenTime = 0;
 datetime lastBuyPositionTime = 0;      // Time of the last Buy position
@@ -105,6 +112,12 @@ int OnInit() {
    // Initialize ADX
    if(UseADXFilter && !adxIndicator.Create(_Symbol, PERIOD_CURRENT, ADXPeriod)) {
       Print("Error creating ADX indicator: ", GetLastError());
+      return(INIT_FAILED);
+   }
+   
+   // Initialize RSI
+   if(UseRSIFilter && !rsiIndicator.Create(_Symbol, PERIOD_CURRENT, RSIPeriod, PRICE_CLOSE)) {
+      Print("Error creating RSI indicator: ", GetLastError());
       return(INIT_FAILED);
    }
    
@@ -177,6 +190,11 @@ void OnTick() {
       adxIndicator.Refresh();
    }
    
+   // Update RSI
+   if(UseRSIFilter) {
+      rsiIndicator.Refresh();
+   }
+   
    // Initialize trade conditions
    bool canOpenBuy = false;
    bool canOpenSell = false;
@@ -228,19 +246,32 @@ void OnTick() {
       }
    }
    
-   // Check conditions based on chosen direction, Bollinger Bands and ADX
+   // Check RSI conditions
+   bool rsiCondition = true;
+   if(UseRSIFilter) {
+      double rsiValue = rsiIndicator.Main(0);
+      rsiCondition = rsiValue <= RSIOverbought && rsiValue >= RSIOversold;
+      
+      if(!rsiCondition) {
+         Print("RSI condition not met: ", NormalizeDouble(rsiValue, 1), 
+               " (Overbought: ", RSIOverbought, ", Oversold: ", RSIOversold, ")");
+      }
+   }
+   
+   // Check conditions based on chosen direction, Bollinger Bands, ADX and RSI
    if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
       bool bollingerCondition = !UseBollingerFilter || 
                               (currentBid > upperBand) || 
                               (AllowBollingerContinuation && buyPositions > 0 && isInsideBands);
       
-      if(bollingerCondition && adxCondition) {
+      if(bollingerCondition && adxCondition && rsiCondition) {
          canOpenBuy = true;
          Print("Buy condition met", 
                UseBollingerFilter ? 
                   (currentBid > upperBand ? " - Above upper Bollinger band" : 
                    (isInsideBands ? " - Inside Bollinger bands (continuation)" : "")) : "",
-               UseADXFilter ? " - ADX in range" : "");
+               UseADXFilter ? " - ADX in range" : "",
+               UseRSIFilter ? " - RSI in range" : "");
       }
    }
    
@@ -249,13 +280,14 @@ void OnTick() {
                               (currentBid < lowerBand) || 
                               (AllowBollingerContinuation && sellPositions > 0 && isInsideBands);
       
-      if(bollingerCondition && adxCondition) {
+      if(bollingerCondition && adxCondition && rsiCondition) {
          canOpenSell = true;
          Print("Sell condition met", 
                UseBollingerFilter ? 
                   (currentBid < lowerBand ? " - Below lower Bollinger band" : 
                    (isInsideBands ? " - Inside Bollinger bands (continuation)" : "")) : "",
-               UseADXFilter ? " - ADX in range" : "");
+               UseADXFilter ? " - ADX in range" : "",
+               UseRSIFilter ? " - RSI in range" : "");
       }
    }
    
@@ -721,6 +753,17 @@ void UpdateInfoPanel() {
       double adxValue = adxIndicator.Main(0);
       CreateLabel(prefix + "ADXValue", StringFormat("ADX: %.1f (Min: %.1f, Max: %.1f)", 
                  adxValue, MinADX, MaxADX), x, y, TextColor);
+      y += yStep;
+   }
+   
+   // Display RSI info
+   if(UseRSIFilter) {
+      CreateLabel(prefix + "RSIFilter", StringFormat("RSI Filter: %s", UseRSIFilter ? "ON" : "OFF"), x, y, TextColor);
+      y += yStep;
+      
+      double rsiValue = rsiIndicator.Main(0);
+      CreateLabel(prefix + "RSIValue", StringFormat("RSI: %.1f (Overbought: %.1f, Oversold: %.1f)", 
+                 rsiValue, RSIOverbought, RSIOversold), x, y, TextColor);
       y += yStep;
    }
    
