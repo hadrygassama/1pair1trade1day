@@ -1,5 +1,8 @@
 {
     "C_Cpp.default.includePath": [
         "c:\\Users\\hadry\\AppData\\Roaming\\MetaQuotes\\Terminal\\5FFA568149E88FCD5B44D926DCFEAA79\\MQL5\\Include"
-    ]
+    ],
+    "files.associations": {
+        "*.mq5": "cpp"
+    }
 }
