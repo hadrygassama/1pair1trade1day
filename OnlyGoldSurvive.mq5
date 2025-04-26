@@ -27,6 +27,8 @@ input group    "=== Position Sizing ==="
 input double   Lots = 0.1;             // Base lot size
 input double   LotMultiplier = 1.5;    // Lot multiplier
 input double   MaxLot = 1.0;           // Max lot size
+input int      MaxBuyPositions = 30;    // Maximum Buy positions
+input int      MaxSellPositions = 30;   // Maximum Sell positions
 
 input group    "=== Entry Conditions ==="
 input bool     UseMinDistance = false;  // Min distance check
@@ -50,6 +52,12 @@ input int      BBPeriod = 20;          // BB period
 input double   BBDeviation = 2.0;      // BB deviation
 input ENUM_APPLIED_PRICE BBPrice = PRICE_CLOSE; // BB price type
 
+input group    "=== ADX Filter ==="
+input bool     UseADXFilter = true;     // ADX filter
+input int      ADXPeriod = 14;          // ADX period
+input double   MinADX = 25.0;           // Minimum ADX value
+input double   MaxADX = 50.0;           // Maximum ADX value
+
 input group    "=== Exit Conditions ==="
 input int      Tral = 5;             // Trailing stop (pips)
 input int      TralStart = 20;        // Trailing start (pips)
@@ -63,6 +71,7 @@ input color    TextColor = clrWhite;   // Text color
 // Global variables
 CTrade trade;
 CiBands bollingerBands;
+CiADX adxIndicator;  // Add ADX indicator
 string expertName = "OnlyGoldSurvive";
 datetime lastOpenTime = 0;
 datetime lastBuyPositionTime = 0;      // Time of the last Buy position
@@ -90,6 +99,12 @@ int OnInit() {
    // Initialize Bollinger Bands
    if(!bollingerBands.Create(_Symbol, PERIOD_CURRENT, BBPeriod, 0, BBDeviation, BBPrice)) {
       Print("Error creating Bollinger Bands: ", GetLastError());
+      return(INIT_FAILED);
+   }
+   
+   // Initialize ADX
+   if(UseADXFilter && !adxIndicator.Create(_Symbol, PERIOD_CURRENT, ADXPeriod)) {
+      Print("Error creating ADX indicator: ", GetLastError());
       return(INIT_FAILED);
    }
    
@@ -157,6 +172,11 @@ void OnTick() {
       return;
    }
    
+   // Update ADX
+   if(UseADXFilter) {
+      adxIndicator.Refresh();
+   }
+   
    // Initialize trade conditions
    bool canOpenBuy = false;
    bool canOpenSell = false;
@@ -196,18 +216,31 @@ void OnTick() {
    int buyPositions = CountPositions(POSITION_TYPE_BUY);
    int sellPositions = CountPositions(POSITION_TYPE_SELL);
    
-   // Check conditions based on chosen direction and Bollinger Bands
+   // Check ADX conditions
+   bool adxCondition = true;
+   if(UseADXFilter) {
+      double adxValue = adxIndicator.Main(0);
+      adxCondition = adxValue >= MinADX && adxValue <= MaxADX;
+      
+      if(!adxCondition) {
+         Print("ADX condition not met: ", NormalizeDouble(adxValue, 1), 
+               " (Min: ", MinADX, ", Max: ", MaxADX, ")");
+      }
+   }
+   
+   // Check conditions based on chosen direction, Bollinger Bands and ADX
    if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
       bool bollingerCondition = !UseBollingerFilter || 
                               (currentBid > upperBand) || 
                               (AllowBollingerContinuation && buyPositions > 0 && isInsideBands);
       
-      if(bollingerCondition) {
+      if(bollingerCondition && adxCondition) {
          canOpenBuy = true;
          Print("Buy condition met", 
                UseBollingerFilter ? 
                   (currentBid > upperBand ? " - Above upper Bollinger band" : 
-                   (isInsideBands ? " - Inside Bollinger bands (continuation)" : "")) : "");
+                   (isInsideBands ? " - Inside Bollinger bands (continuation)" : "")) : "",
+               UseADXFilter ? " - ADX in range" : "");
       }
    }
    
@@ -216,12 +249,13 @@ void OnTick() {
                               (currentBid < lowerBand) || 
                               (AllowBollingerContinuation && sellPositions > 0 && isInsideBands);
       
-      if(bollingerCondition) {
+      if(bollingerCondition && adxCondition) {
          canOpenSell = true;
          Print("Sell condition met", 
                UseBollingerFilter ? 
                   (currentBid < lowerBand ? " - Below lower Bollinger band" : 
-                   (isInsideBands ? " - Inside Bollinger bands (continuation)" : "")) : "");
+                   (isInsideBands ? " - Inside Bollinger bands (continuation)" : "")) : "",
+               UseADXFilter ? " - ADX in range" : "");
       }
    }
    
@@ -261,6 +295,12 @@ void OpenBuyOrder() {
    }
    
    int totalBuyPositions = CountPositions(POSITION_TYPE_BUY);
+   
+   // Check if we've reached the maximum number of Buy positions
+   if(totalBuyPositions >= MaxBuyPositions) {
+      Print("Maximum Buy positions reached: ", totalBuyPositions, " >= ", MaxBuyPositions);
+      return;
+   }
    
    if(totalBuyPositions < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
       int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_BUY);
@@ -307,6 +347,12 @@ void OpenSellOrder() {
    }
    
    int totalSellPositions = CountPositions(POSITION_TYPE_SELL);
+   
+   // Check if we've reached the maximum number of Sell positions
+   if(totalSellPositions >= MaxSellPositions) {
+      Print("Maximum Sell positions reached: ", totalSellPositions, " >= ", MaxSellPositions);
+      return;
+   }
    
    if(totalSellPositions < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
       int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_SELL);
@@ -631,9 +677,9 @@ void UpdateInfoPanel() {
    if(!Info) return;
 
    string prefix = "EA_Info_";
-   int x = 10;  // Distance from left border (reduced from 20)
-   int y = 20;  // Distance from top border
-   int yStep = FontSize + 10;  // Vertical spacing based on font size
+   int x = 10;
+   int y = 20;
+   int yStep = FontSize + 10;
    
    ObjectsDeleteAll(0, prefix);
    
@@ -664,6 +710,17 @@ void UpdateInfoPanel() {
       CreateLabel(prefix + "BBStatus", StringFormat("BB Status: %s", 
                  currentBid > upperBand ? "Above Upper" : (currentBid < lowerBand ? "Below Lower" : "Inside Bands")), 
                  x, y, TextColor);
+      y += yStep;
+   }
+   
+   // Display ADX info
+   if(UseADXFilter) {
+      CreateLabel(prefix + "ADXFilter", StringFormat("ADX Filter: %s", UseADXFilter ? "ON" : "OFF"), x, y, TextColor);
+      y += yStep;
+      
+      double adxValue = adxIndicator.Main(0);
+      CreateLabel(prefix + "ADXValue", StringFormat("ADX: %.1f (Min: %.1f, Max: %.1f)", 
+                 adxValue, MinADX, MaxADX), x, y, TextColor);
       y += yStep;
    }
    
