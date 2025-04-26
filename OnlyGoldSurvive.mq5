@@ -1,0 +1,803 @@
+//+------------------------------------------------------------------+
+//|                                                           EA_new.mq5 |
+//|                                  Copyright 2024, MetaQuotes Ltd. |
+//|                                             https://www.mql5.com |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2024, MetaQuotes Ltd."
+#property link      "https://www.mql5.com"
+#property version   "1.00"
+#property strict
+
+#include <Trade\Trade.mqh>
+#include <Indicators\Indicators.mqh>
+
+// Enum for trading direction
+enum ENUM_TRADE_DIRECTION {
+   TRADE_BUY_ONLY,      // Buy Only
+   TRADE_SELL_ONLY,     // Sell Only
+   TRADE_BOTH           // Buy and Sell
+};
+
+// Expert parameters
+input group    "=== Trading Direction ==="
+input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Direction
+input int      Magic = 123456;         // EA ID
+
+input group    "=== Position Sizing ==="
+input double   Lots = 0.1;             // Base lot size
+input double   LotMultiplier = 1.5;    // Lot multiplier
+input double   MaxLot = 1.0;           // Max lot size
+
+input group    "=== Entry Conditions ==="
+input bool     UseMinDistance = false;  // Min distance check
+input int      MinDistancePips = 30;   // Min distance (pips)
+input bool     UseMinTime = false;      // Min time check
+input int      OpenTime = 60;          // Min time (seconds)
+input int      PipsStep = 20;          // Price movement (pips)
+input int      MaxSpread = 50;         // Max spread (pips)
+
+input group    "=== Trading Hours ==="
+input int      BrokerGMTOffset = 3;    // GMT offset
+input int      TimeStartHour = 0;      // Start hour (GMT)
+input int      TimeStartMinute = 0;    // Start minute
+input int      TimeEndHour = 23;       // End hour (GMT)
+input int      TimeEndMinute = 59;     // End minute
+
+input group    "=== Bollinger Bands Filter ==="
+input bool     UseBollingerFilter = true;  // BB filter
+input bool     AllowBollingerContinuation = true;  // Inside bands trading
+input int      BBPeriod = 20;          // BB period
+input double   BBDeviation = 2.0;      // BB deviation
+input ENUM_APPLIED_PRICE BBPrice = PRICE_CLOSE; // BB price type
+
+input group    "=== Exit Conditions ==="
+input int      Tral = 5;             // Trailing stop (pips)
+input int      TralStart = 20;        // Trailing start (pips)
+input double   TakeProfit = 30;       // Take profit (pips)
+
+input group    "=== Interface Settings ==="
+input bool     Info = true;            // Show panel
+input int      FontSize = 12;          // Font size
+input color    TextColor = clrWhite;   // Text color
+
+// Global variables
+CTrade trade;
+CiBands bollingerBands;
+string expertName = "OnlyGoldSurvive";
+datetime lastOpenTime = 0;
+datetime lastBuyPositionTime = 0;      // Time of the last Buy position
+datetime lastSellPositionTime = 0;     // Time of the last Sell position
+double lastBidPrice = 0;
+double initialBalance = 0;
+double maxBuyDD = 0;
+double maxSellDD = 0;
+double maxTotalDD = 0;
+double totalPriceMovement = 0;  // Variable to track total price movement
+datetime lastLogTime = 0;        // Variable for log filtering
+double lastSpread = 0;            // Variable for log filtering
+double lastLoggedMovement = 0;    // Variable for log filtering
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                      |
+//+------------------------------------------------------------------+
+int OnInit() {
+   trade.SetExpertMagicNumber(Magic);
+   initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   maxBuyDD = 0;
+   maxSellDD = 0;
+   maxTotalDD = 0;
+   
+   // Initialize Bollinger Bands
+   if(!bollingerBands.Create(_Symbol, PERIOD_CURRENT, BBPeriod, 0, BBDeviation, BBPrice)) {
+      Print("Error creating Bollinger Bands: ", GetLastError());
+      return(INIT_FAILED);
+   }
+   
+   Print("EA initialized - Magic: ", Magic);
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                   |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason) {
+   ObjectsDeleteAll(0, "EA_Info_");
+   Print("EA deinitialized");
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                               |
+//+------------------------------------------------------------------+
+void OnTick() {
+   // Update panel first
+   if(Info) UpdateInfoPanel();
+   
+   // Check trading hours
+   datetime currentTime = TimeCurrent();
+   MqlDateTime timeStruct;
+   TimeToStruct(currentTime, timeStruct);
+   
+   // Adjust broker time to GMT
+   int brokerHour = timeStruct.hour;
+   int brokerMinute = timeStruct.min;
+   
+   // Convert broker time to GMT
+   int gmtHour = brokerHour - BrokerGMTOffset;
+   if(gmtHour < 0) gmtHour += 24;
+   if(gmtHour >= 24) gmtHour -= 24;
+   
+   // Convert trading hours to minutes for comparison
+   int currentTimeInMinutes = gmtHour * 60 + brokerMinute;
+   int startTimeInMinutes = TimeStartHour * 60 + TimeStartMinute;
+   int endTimeInMinutes = TimeEndHour * 60 + TimeEndMinute;
+   
+   if(currentTimeInMinutes < startTimeInMinutes || currentTimeInMinutes >= endTimeInMinutes) {
+      Print("Outside trading hours - GMT: ", gmtHour, ":", brokerMinute, 
+            " (Start GMT: ", TimeStartHour, ":", TimeStartMinute, 
+            ", End GMT: ", TimeEndHour, ":", TimeEndMinute, 
+            ", Broker GMT Offset: ", BrokerGMTOffset, ")");
+      return;
+   }
+   
+   // Check spread
+   double currentSpread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double spreadInPips = currentSpread / (_Point * 10);  // Convert to pips (1 pip = 10 points)
+   
+   // Log spread only when it changes significantly or every 30 seconds
+   if(currentTime - lastLogTime >= 30 || MathAbs(spreadInPips - lastSpread) >= 5) {
+      Print("Spread Update: ", NormalizeDouble(spreadInPips, 1), " pips (", 
+            spreadInPips > lastSpread ? "increased" : "decreased", " by ", 
+            NormalizeDouble(MathAbs(spreadInPips - lastSpread), 1), " pips)");
+      lastLogTime = currentTime;
+      lastSpread = spreadInPips;
+   }
+   
+   if(spreadInPips > MaxSpread) {
+      Print("Spread too high: ", NormalizeDouble(spreadInPips, 1), " pips > ", MaxSpread, " pips");
+      return;
+   }
+   
+   // Initialize trade conditions
+   bool canOpenBuy = false;
+   bool canOpenSell = false;
+   
+   // Check time conditions for new trades
+   if(lastOpenTime == 0) {
+      lastOpenTime = currentTime;
+      lastBidPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      totalPriceMovement = 0;
+      Print("First tick - Initializing lastOpenTime and lastBidPrice");
+   }
+   
+   // Check price movements for new trades
+   double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double priceMovement = MathAbs(currentBid - lastBidPrice) / (_Point * 10);  // Movement in pips
+   totalPriceMovement += priceMovement;
+   
+   // Log price movement only when significant or every 30 seconds
+   if(currentTime - lastLogTime >= 30 || MathAbs(totalPriceMovement - lastLoggedMovement) >= 100) {
+      Print("Price Update: Current: ", NormalizeDouble(currentBid, 2), 
+            ", Movement: ", NormalizeDouble(priceMovement, 1), 
+            " pips, Total: ", NormalizeDouble(totalPriceMovement, 1), 
+            " pips, Required: ", PipsStep, " pips");
+      lastLogTime = currentTime;
+      lastLoggedMovement = totalPriceMovement;
+   }
+   
+   // Update Bollinger Bands
+   bollingerBands.Refresh();
+   double upperBand = bollingerBands.Upper(0);
+   double lowerBand = bollingerBands.Lower(0);
+   
+   // Check if price is inside Bollinger Bands
+   bool isInsideBands = currentBid >= lowerBand && currentBid <= upperBand;
+   
+   // Count existing positions
+   int buyPositions = CountPositions(POSITION_TYPE_BUY);
+   int sellPositions = CountPositions(POSITION_TYPE_SELL);
+   
+   // Check conditions based on chosen direction and Bollinger Bands
+   if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
+      bool bollingerCondition = !UseBollingerFilter || 
+                              (currentBid > upperBand) || 
+                              (AllowBollingerContinuation && buyPositions > 0 && isInsideBands);
+      
+      if(bollingerCondition) {
+         canOpenBuy = true;
+         Print("Buy condition met", 
+               UseBollingerFilter ? 
+                  (currentBid > upperBand ? " - Above upper Bollinger band" : 
+                   (isInsideBands ? " - Inside Bollinger bands (continuation)" : "")) : "");
+      }
+   }
+   
+   if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
+      bool bollingerCondition = !UseBollingerFilter || 
+                              (currentBid < lowerBand) || 
+                              (AllowBollingerContinuation && sellPositions > 0 && isInsideBands);
+      
+      if(bollingerCondition) {
+         canOpenSell = true;
+         Print("Sell condition met", 
+               UseBollingerFilter ? 
+                  (currentBid < lowerBand ? " - Below lower Bollinger band" : 
+                   (isInsideBands ? " - Inside Bollinger bands (continuation)" : "")) : "");
+      }
+   }
+   
+   // Open new trades if conditions are met
+   if(canOpenBuy) {
+      OpenBuyOrder();
+      lastBidPrice = currentBid;  // Update lastBidPrice only after a trade
+      totalPriceMovement = 0;     // Reset total movement
+      lastOpenTime = currentTime; // Update last trade time
+   }
+   if(canOpenSell) {
+      OpenSellOrder();
+      lastBidPrice = currentBid;  // Update lastBidPrice only after a trade
+      totalPriceMovement = 0;     // Reset total movement
+      lastOpenTime = currentTime; // Update last trade time
+   }
+   
+   // Update trailing stops and check take profits
+   UpdateTrailingStops();
+   
+   // Check DCA conditions only for allowed directions
+   CheckDCAConditions();
+}
+
+//+------------------------------------------------------------------+
+//| Open Buy Order                                                     |
+//+------------------------------------------------------------------+
+void OpenBuyOrder() {
+   // Check if Buy is allowed
+   if(TradeDirection == TRADE_SELL_ONLY) return;
+   
+   // Check minimum delay
+   datetime currentTime = TimeCurrent();
+   if(UseMinTime && currentTime - lastBuyPositionTime < OpenTime) {
+      Print("Minimum delay not met for Buy: ", currentTime - lastBuyPositionTime, " seconds < ", OpenTime, " seconds");
+      return;
+   }
+   
+   int totalBuyPositions = CountPositions(POSITION_TYPE_BUY);
+   
+   if(totalBuyPositions < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
+      int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_BUY);
+      
+      if(positionsInCurrentBar == 0) {
+         // Get symbol properties
+         double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+         double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+         
+         // Calculate lot size with multiplier
+         double calculatedLots = Lots * MathPow(LotMultiplier, totalBuyPositions);
+         calculatedLots = MathMin(calculatedLots, MaxLot); // Ensure we don't exceed MaxLot
+         
+         // Round to the nearest valid lot size
+         calculatedLots = MathFloor(calculatedLots / lotStep) * lotStep;
+         calculatedLots = MathMax(calculatedLots, minLot); // Ensure we don't go below minimum
+         
+         // Check minimum distance from last position
+         if(CheckMinimumDistance(POSITION_TYPE_BUY, MinDistancePips)) {
+            if(!trade.Buy(calculatedLots, _Symbol, 0, 0, 0, expertName)) {
+               Print("Buy order failed. Error: ", GetLastError());
+            }
+            else {
+               Print("Buy order placed successfully with lots: ", calculatedLots);
+               lastBuyPositionTime = currentTime; // Update time of last Buy position
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Open Sell Order                                                    |
+//+------------------------------------------------------------------+
+void OpenSellOrder() {
+   // Check if Sell is allowed
+   if(TradeDirection == TRADE_BUY_ONLY) return;
+   
+   // Check minimum delay
+   datetime currentTime = TimeCurrent();
+   if(UseMinTime && currentTime - lastSellPositionTime < OpenTime) {
+      Print("Minimum delay not met for Sell: ", currentTime - lastSellPositionTime, " seconds < ", OpenTime, " seconds");
+      return;
+   }
+   
+   int totalSellPositions = CountPositions(POSITION_TYPE_SELL);
+   
+   if(totalSellPositions < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
+      int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_SELL);
+      
+      if(positionsInCurrentBar == 0) {
+         // Get symbol properties
+         double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+         double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+         
+         // Calculate lot size with multiplier
+         double calculatedLots = Lots * MathPow(LotMultiplier, totalSellPositions);
+         calculatedLots = MathMin(calculatedLots, MaxLot); // Ensure we don't exceed MaxLot
+         
+         // Round to the nearest valid lot size
+         calculatedLots = MathFloor(calculatedLots / lotStep) * lotStep;
+         calculatedLots = MathMax(calculatedLots, minLot); // Ensure we don't go below minimum
+         
+         // Check minimum distance from last position
+         if(CheckMinimumDistance(POSITION_TYPE_SELL, MinDistancePips)) {
+            if(!trade.Sell(calculatedLots, _Symbol, 0, 0, 0, expertName)) {
+               Print("Sell order failed. Error: ", GetLastError());
+            }
+            else {
+               Print("Sell order placed successfully with lots: ", calculatedLots);
+               lastSellPositionTime = currentTime; // Update time of last Sell position
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check Minimum Distance                                             |
+//+------------------------------------------------------------------+
+bool CheckMinimumDistance(ENUM_POSITION_TYPE positionType, int minDistancePips) {
+   if(!UseMinDistance) return true;  // Skip distance check if disabled
+   
+   double currentPrice = positionType == POSITION_TYPE_BUY ? 
+                        SymbolInfoDouble(_Symbol, SYMBOL_BID) : 
+                        SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol &&
+            PositionGetInteger(POSITION_TYPE) == positionType) {
+            
+            double positionPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            double distanceInPips = MathAbs(currentPrice - positionPrice) / (_Point * 10);
+            
+            if(distanceInPips < minDistancePips) {
+               Print("Minimum distance not met: ", NormalizeDouble(distanceInPips, 1), 
+                     " pips < ", minDistancePips, " pips");
+               return false;
+            }
+         }
+      }
+   }
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Count Positions                                                    |
+//+------------------------------------------------------------------+
+int CountPositions(ENUM_POSITION_TYPE positionType) {
+   int count = 0;
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol &&
+            PositionGetInteger(POSITION_TYPE) == positionType) {
+            count++;
+         }
+      }
+   }
+   
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| Count Positions in Current Bar                                     |
+//+------------------------------------------------------------------+
+int CountPositionsInCurrentBar(ENUM_POSITION_TYPE positionType) {
+   int count = 0;
+   datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol &&
+            PositionGetInteger(POSITION_TYPE) == positionType) {
+            datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+            if(openTime >= currentBarTime) {
+               count++;
+            }
+         }
+      }
+   }
+   
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| Update Trailing Stops                                              |
+//+------------------------------------------------------------------+
+void UpdateTrailingStops() {
+   // Variables for Buy positions
+   double buyTotalProfit = 0;
+   double buyAveragePrice = 0;
+   int buyPositionCount = 0;
+   double buyTotalLots = 0;
+   
+   // Variables for Sell positions
+   double sellTotalProfit = 0;
+   double sellAveragePrice = 0;
+   int sellPositionCount = 0;
+   double sellTotalLots = 0;
+   
+   // First pass: calculate averages and profits
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol) {
+            
+            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            double positionLots = PositionGetDouble(POSITION_VOLUME);
+            double positionProfit = PositionGetDouble(POSITION_PROFIT);
+            
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+               buyTotalProfit += positionProfit;
+               buyAveragePrice += openPrice * positionLots;
+               buyTotalLots += positionLots;
+               buyPositionCount++;
+            }
+            else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
+               sellTotalProfit += positionProfit;
+               sellAveragePrice += openPrice * positionLots;
+               sellTotalLots += positionLots;
+               sellPositionCount++;
+            }
+         }
+      }
+   }
+   
+   // Calculate weighted average prices
+   if(buyPositionCount > 0) buyAveragePrice /= buyTotalLots;
+   if(sellPositionCount > 0) sellAveragePrice /= sellTotalLots;
+   
+   // Manage profits and trailing stops
+   if(buyPositionCount > 0) {
+      double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double buyProfitInPoints = (currentBid - buyAveragePrice) / _Point;
+      
+      // Check if Buy group has reached take profit
+      if(buyProfitInPoints >= TakeProfit) {
+         Print("Closing all Buy positions - Total profit in points: ", buyProfitInPoints);
+         ClosePositionsInDirection(POSITION_TYPE_BUY);
+      } else {
+         // Update trailing stops for all Buy positions
+         if(Tral != 0) {
+            for(int i = PositionsTotal() - 1; i >= 0; i--) {
+               if(PositionSelectByTicket(PositionGetTicket(i))) {
+                  if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+                     PositionGetString(POSITION_SYMBOL) == _Symbol &&
+                     PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+                     
+                     double currentSL = PositionGetDouble(POSITION_SL);
+                     
+                     if(currentSL < buyAveragePrice || currentSL == 0) {
+                        if(currentBid - (Tral + TralStart) * _Point >= buyAveragePrice) {
+                           trade.PositionModify(PositionGetTicket(i),
+                                              buyAveragePrice + TralStart * _Point,
+                                              PositionGetDouble(POSITION_TP));
+                        }
+                     }
+                     else if(currentSL >= buyAveragePrice) {
+                        if(currentBid - Tral * _Point > currentSL) {
+                           trade.PositionModify(PositionGetTicket(i),
+                                              currentBid - Tral * _Point,
+                                              PositionGetDouble(POSITION_TP));
+                        }
+                     }
+                  }
+               }
+            }
+         }
+      }
+   }
+   
+   if(sellPositionCount > 0) {
+      double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double sellProfitInPoints = (sellAveragePrice - currentAsk) / _Point;
+      
+      // Check if Sell group has reached take profit
+      if(sellProfitInPoints >= TakeProfit) {
+         Print("Closing all Sell positions - Total profit in points: ", sellProfitInPoints);
+         ClosePositionsInDirection(POSITION_TYPE_SELL);
+      } else {
+         // Update trailing stops for all Sell positions
+         if(Tral != 0) {
+            for(int i = PositionsTotal() - 1; i >= 0; i--) {
+               if(PositionSelectByTicket(PositionGetTicket(i))) {
+                  if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+                     PositionGetString(POSITION_SYMBOL) == _Symbol &&
+                     PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
+                     
+                     double currentSL = PositionGetDouble(POSITION_SL);
+                     
+                     if(currentSL > sellAveragePrice || currentSL == 0) {
+                        if(currentAsk + (Tral + TralStart) * _Point <= sellAveragePrice) {
+                           trade.PositionModify(PositionGetTicket(i),
+                                              sellAveragePrice - TralStart * _Point,
+                                              PositionGetDouble(POSITION_TP));
+                        }
+                     }
+                     else if(currentSL <= sellAveragePrice) {
+                        if(currentAsk + Tral * _Point < currentSL) {
+                           trade.PositionModify(PositionGetTicket(i),
+                                              currentAsk + Tral * _Point,
+                                              PositionGetDouble(POSITION_TP));
+                        }
+                     }
+                  }
+               }
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Close Positions in Direction                                       |
+//+------------------------------------------------------------------+
+void ClosePositionsInDirection(ENUM_POSITION_TYPE positionType) {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol &&
+            PositionGetInteger(POSITION_TYPE) == positionType) {
+            trade.PositionClose(PositionGetTicket(i));
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check DCA Conditions                                              |
+//+------------------------------------------------------------------+
+void CheckDCAConditions() {
+   // Variables for Buy
+   double buyAveragePrice = 0;
+   double buyTotalLots = 0;
+   int buyPositionCount = 0;
+   
+   // Variables for Sell
+   double sellAveragePrice = 0;
+   double sellTotalLots = 0;
+   int sellPositionCount = 0;
+   
+   // Calculate averages for Buy and Sell separately
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol) {
+            
+            double positionLots = PositionGetDouble(POSITION_VOLUME);
+            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+               buyAveragePrice += openPrice * positionLots;
+               buyTotalLots += positionLots;
+               buyPositionCount++;
+            }
+            else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
+               sellAveragePrice += openPrice * positionLots;
+               sellTotalLots += positionLots;
+               sellPositionCount++;
+            }
+         }
+      }
+   }
+   
+   // Calculate weighted average prices
+   if(buyTotalLots > 0) buyAveragePrice /= buyTotalLots;
+   if(sellTotalLots > 0) sellAveragePrice /= sellTotalLots;
+   
+   double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   
+   // Check DCA conditions for Buy if allowed
+   if(TradeDirection != TRADE_SELL_ONLY && buyPositionCount > 0) {
+      if(currentBid + PipsStep * _Point <= buyAveragePrice && 
+         buyPositionCount < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
+         
+         int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_BUY);
+         if(positionsInCurrentBar == 0) {
+            Print("DCA Buy condition met - Price dropped below average by ", PipsStep, " pips");
+            OpenBuyOrder();
+         }
+      }
+   }
+   
+   // Check DCA conditions for Sell if allowed
+   if(TradeDirection != TRADE_BUY_ONLY && sellPositionCount > 0) {
+      if(currentAsk - PipsStep * _Point >= sellAveragePrice && 
+         sellPositionCount < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
+         
+         int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_SELL);
+         if(positionsInCurrentBar == 0) {
+            Print("DCA Sell condition met - Price rose above average by ", PipsStep, " pips");
+            OpenSellOrder();
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Update Info Panel                                                  |
+//+------------------------------------------------------------------+
+void UpdateInfoPanel() {
+   if(!Info) return;
+
+   string prefix = "EA_Info_";
+   int x = 10;  // Distance from left border (reduced from 20)
+   int y = 20;  // Distance from top border
+   int yStep = FontSize + 10;  // Vertical spacing based on font size
+   
+   ObjectsDeleteAll(0, prefix);
+   
+   // Display EA status
+   CreateLabel(prefix + "Title", "=== EA Status ===", x, y, TextColor);
+   y += yStep;
+   
+   // Display current spread
+   double spread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double spreadInPips = spread / (_Point * 10);
+   CreateLabel(prefix + "Spread", StringFormat("Spread: %.1f pips", spreadInPips), x, y, TextColor);
+   y += yStep;
+   
+   // Display Bollinger Bands info
+   bollingerBands.Refresh();
+   double upperBand = bollingerBands.Upper(0);
+   double lowerBand = bollingerBands.Lower(0);
+   double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   
+   CreateLabel(prefix + "BBFilter", StringFormat("BB Filter: %s", UseBollingerFilter ? "ON" : "OFF"), x, y, TextColor);
+   y += yStep;
+   
+   if(UseBollingerFilter) {
+      CreateLabel(prefix + "BBUpper", StringFormat("BB Upper: %.5f", upperBand), x, y, TextColor);
+      y += yStep;
+      CreateLabel(prefix + "BBLower", StringFormat("BB Lower: %.5f", lowerBand), x, y, TextColor);
+      y += yStep;
+      CreateLabel(prefix + "BBStatus", StringFormat("BB Status: %s", 
+                 currentBid > upperBand ? "Above Upper" : (currentBid < lowerBand ? "Below Lower" : "Inside Bands")), 
+                 x, y, TextColor);
+      y += yStep;
+   }
+   
+   // Calculate positions info
+   int totalBuyPositions = CountPositions(POSITION_TYPE_BUY);
+   int totalSellPositions = CountPositions(POSITION_TYPE_SELL);
+   double buyTotalProfit = 0;
+   double sellTotalProfit = 0;
+   double buyAveragePrice = 0;
+   double sellAveragePrice = 0;
+   double buyTotalLots = 0;
+   double sellTotalLots = 0;
+   
+   // Calculate profits and averages
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol) {
+            
+            double positionLots = PositionGetDouble(POSITION_VOLUME);
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+               buyTotalProfit += PositionGetDouble(POSITION_PROFIT);
+               buyAveragePrice += PositionGetDouble(POSITION_PRICE_OPEN) * positionLots;
+               buyTotalLots += positionLots;
+            }
+            else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
+               sellTotalProfit += PositionGetDouble(POSITION_PROFIT);
+               sellAveragePrice += PositionGetDouble(POSITION_PRICE_OPEN) * positionLots;
+               sellTotalLots += positionLots;
+            }
+         }
+      }
+   }
+   
+   // Calculate average prices
+   if(buyTotalLots > 0) buyAveragePrice /= buyTotalLots;
+   if(sellTotalLots > 0) sellAveragePrice /= sellTotalLots;
+   
+   // Calculate drawdowns
+   double currentBuyDD = 0;
+   double currentSellDD = 0;
+   
+   if(buyTotalProfit < 0) {
+      currentBuyDD = MathAbs(buyTotalProfit) / initialBalance * 100;
+      maxBuyDD = MathMax(maxBuyDD, currentBuyDD);
+   }
+   
+   if(sellTotalProfit < 0) {
+      currentSellDD = MathAbs(sellTotalProfit) / initialBalance * 100;
+      maxSellDD = MathMax(maxSellDD, currentSellDD);
+   }
+   
+   // Calculate total drawdown
+   double totalProfit = buyTotalProfit + sellTotalProfit;
+   double currentTotalDD = 0;
+   
+   if(totalProfit < 0) {
+      currentTotalDD = MathAbs(totalProfit) / initialBalance * 100;
+      maxTotalDD = MathMax(maxTotalDD, currentTotalDD);
+   }
+   
+   // Display Buy information
+   CreateLabel(prefix + "BuyPositions", StringFormat("Buy Positions: %d (%.2f lots)", totalBuyPositions, buyTotalLots), x, y, clrLime);
+   y += yStep;
+   if(totalBuyPositions > 0) {
+      CreateLabel(prefix + "BuyProfit", StringFormat("Buy Profit: %.2f", buyTotalProfit), x, y, clrLime);
+      y += yStep;
+      CreateLabel(prefix + "BuyAverage", StringFormat("Buy Avg Price: %.5f", buyAveragePrice), x, y, clrLime);
+      y += yStep;
+      CreateLabel(prefix + "BuyDD", StringFormat("Buy DD: %.2f%% (Max: %.2f%%)", currentBuyDD, maxBuyDD), x, y, 
+                 currentBuyDD > 0 ? clrOrange : clrLime);
+      y += yStep;
+   }
+   
+   // Display Sell information
+   CreateLabel(prefix + "SellPositions", StringFormat("Sell Positions: %d (%.2f lots)", totalSellPositions, sellTotalLots), x, y, clrRed);
+   y += yStep;
+   if(totalSellPositions > 0) {
+      CreateLabel(prefix + "SellProfit", StringFormat("Sell Profit: %.2f", sellTotalProfit), x, y, clrRed);
+      y += yStep;
+      CreateLabel(prefix + "SellAverage", StringFormat("Sell Avg Price: %.5f", sellAveragePrice), x, y, clrRed);
+      y += yStep;
+      CreateLabel(prefix + "SellDD", StringFormat("Sell DD: %.2f%% (Max: %.2f%%)", currentSellDD, maxSellDD), x, y, 
+                 currentSellDD > 0 ? clrOrange : clrRed);
+      y += yStep;
+   }
+   
+   // Display total information
+   y += yStep;
+   int totalPositions = totalBuyPositions + totalSellPositions;
+   double totalLots = buyTotalLots + sellTotalLots;
+   CreateLabel(prefix + "TotalPositions", StringFormat("Total Positions: %d (%.2f lots)", totalPositions, totalLots), x, y, TextColor);
+   y += yStep;
+   CreateLabel(prefix + "TotalProfit", StringFormat("Total Profit: %.2f", totalProfit), x, y, TextColor);
+   y += yStep;
+   CreateLabel(prefix + "TotalDD", StringFormat("Total DD: %.2f%% (Max: %.2f%%)", currentTotalDD, maxTotalDD), x, y, 
+              currentTotalDD > 0 ? clrOrange : TextColor);
+   y += yStep;
+   
+   // Display next trade time
+   datetime currentTime = TimeCurrent();
+   if(lastOpenTime > 0) {
+      datetime nextOpenTime = lastOpenTime + 60;
+      if(nextOpenTime > currentTime) {
+         CreateLabel(prefix + "NextTrade", StringFormat("Next Trade: %s", 
+                    TimeToString(nextOpenTime, TIME_MINUTES|TIME_SECONDS)), x, y, TextColor);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Create Label for Info Panel                                        |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, string text, int x, int y, color clr) {
+   if(ObjectFind(0, name) != -1) {
+      ObjectDelete(0, name);
+   }
+   
+   if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0)) {
+      Print("Error creating label: ", GetLastError());
+      return;
+   }
+   
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, FontSize);
+   ObjectSetString(0, name, OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   
+   ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+   ChartRedraw(0);
+} 
