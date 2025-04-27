@@ -4,7 +4,7 @@
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, MetaQuotes Ltd."
-#property link      "https://www.mql5.com"
+#property link      "https://www.1pair1trade1day.com"
 #property version   "1.00"
 #property strict
 
@@ -1174,4 +1174,4 @@ void PrintStatusLine() {
          buyPositions, buyProfit, buyLots,
          sellPositions, sellProfit, sellLots,
          spread, adxValue, rsiValue);
-} 
+}
