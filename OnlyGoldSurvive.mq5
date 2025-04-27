@@ -54,7 +54,7 @@ input ENUM_APPLIED_PRICE BBPrice = PRICE_CLOSE; // BB price type
 input int      MinDistanceFromBB = 10;  // Minimum distance from BB in pips
 
 input group    "=== ADX Filter ==="
-input bool     UseADXFilter = true;     // Enable ADX filter
+input bool     UseADXFilter = false;     // Enable ADX filter
 input int      ADXPeriod = 14;          // ADX period
 input double   MinADX = 25.0;           // Minimum ADX value
 input double   MaxADX = 100.0;           // Maximum ADX value
@@ -103,6 +103,38 @@ datetime lastLogTime = 0;        // Variable for log filtering
 double lastSpread = 0;            // Variable for log filtering
 double lastLoggedMovement = 0;    // Variable for log filtering
 
+// Variables globales pour le cache
+double cachedBuyProfit = 0;
+double cachedSellProfit = 0;
+double cachedBuyLots = 0;
+double cachedSellLots = 0;
+int cachedBuyPositions = 0;
+int cachedSellPositions = 0;
+datetime lastCacheUpdate = 0;
+int cacheUpdateInterval = 5; // Augmentation de l'intervalle à 5 secondes
+bool cacheNeedsUpdate = true; // Nouvelle variable pour suivre si le cache doit être mis à jour
+
+// Variables globales pour le cache des indicateurs
+double cachedUpperBand = 0;
+double cachedLowerBand = 0;
+double cachedADXValue = 0;
+double cachedRSIValue = 0;
+datetime lastIndicatorUpdate = 0;
+int indicatorUpdateInterval = 5; // Mise à jour des indicateurs toutes les 5 secondes
+
+// Variables globales pour le cache des drawdowns
+double cachedBuyDD = 0;
+double cachedSellDD = 0;
+double cachedTotalDD = 0;
+datetime lastDDUpdate = 0;
+int DDUpdateInterval = 5; // Mise à jour des drawdowns toutes les 5 secondes
+
+// Variables globales pour le cache des conditions
+bool cachedCanTradeBuy = false;
+bool cachedCanTradeSell = false;
+datetime lastConditionCheck = 0;
+int conditionCheckInterval = 5; // Vérification des conditions toutes les 5 secondes
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                      |
 //+------------------------------------------------------------------+
@@ -150,19 +182,44 @@ void OnTick() {
    // Update panel first
    if(Info) UpdateInfoPanel();
    
+   // Update indicators, drawdowns and conditions
+   UpdateIndicators();
+   UpdateDrawdowns();
+   CheckTradingConditions();
+   
+   // Get current price
+   double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   
    // Check trading hours
    datetime currentTime = TimeCurrent();
    MqlDateTime timeStruct;
    TimeToStruct(currentTime, timeStruct);
    
-   // Adjust broker time to GMT
+   // Get broker time
    int brokerHour = timeStruct.hour;
    int brokerMinute = timeStruct.min;
    
-   // Convert broker time to GMT
+   // Convert broker time (GMT+3) to GMT
    int gmtHour = brokerHour - BrokerGMTOffset;
-   if(gmtHour < 0) gmtHour += 24;
-   if(gmtHour >= 24) gmtHour -= 24;
+   if(gmtHour < 0) {
+      gmtHour += 24;
+      // Si on passe à la journée précédente, on ne trade pas
+      Print("Outside trading hours - Day change detected");
+      PrintStatusLine();
+      return;
+   }
+   if(gmtHour >= 24) {
+      gmtHour -= 24;
+      // Si on passe à la journée suivante, on ne trade pas
+      Print("Outside trading hours - Day change detected");
+      PrintStatusLine();
+      return;
+   }
+   
+   Print("=== DEBUG - Trading Hours ===");
+   Print("Broker Time: ", brokerHour, ":", brokerMinute, " (GMT+", BrokerGMTOffset, ")");
+   Print("GMT Time: ", gmtHour, ":", brokerMinute);
+   Print("Trading Hours: ", TimeStartHour, ":", TimeStartMinute, " to ", TimeEndHour, ":", TimeEndMinute, " GMT");
    
    // Convert trading hours to minutes for comparison
    int currentTimeInMinutes = gmtHour * 60 + brokerMinute;
@@ -170,114 +227,32 @@ void OnTick() {
    int endTimeInMinutes = TimeEndHour * 60 + TimeEndMinute;
    
    if(currentTimeInMinutes < startTimeInMinutes || currentTimeInMinutes >= endTimeInMinutes) {
+      Print("Outside trading hours - Current GMT: ", gmtHour, ":", brokerMinute);
       PrintStatusLine();
       return;
    }
    
    // Check spread
    double currentSpread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double spreadInPips = currentSpread / (_Point * 10);  // Convert to pips (1 pip = 10 points)
+   double spreadInPips = currentSpread / (_Point * 10);
    
    if(spreadInPips > MaxSpread) {
       PrintStatusLine();
       return;
    }
    
-   // Update ADX
-   if(UseADXFilter) {
-      adxIndicator.Refresh();
-   }
-   
-   // Update RSI
-   if(UseRSIFilter) {
-      rsiIndicator.Refresh();
-   }
-   
-   // Initialize trade conditions
-   bool canOpenBuy = false;
-   bool canOpenSell = false;
-   
-   // Check time conditions for new trades
-   if(lastOpenTime == 0) {
-      lastOpenTime = currentTime;
-      lastBidPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      totalPriceMovement = 0;
-   }
-   
-   // Check price movements for new trades
-   double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double priceMovement = MathAbs(currentBid - lastBidPrice) / (_Point * 10);  // Movement in pips
-   totalPriceMovement += priceMovement;
-   
-   // Update Bollinger Bands
-   bollingerBands.Refresh();
-   double upperBand = bollingerBands.Upper(0);
-   double lowerBand = bollingerBands.Lower(0);
-   
-   // Check if price is inside Bollinger Bands
-   bool isInsideBands = currentBid >= lowerBand && currentBid <= upperBand;
-   
-   // Count existing positions
-   int buyPositions = CountPositions(POSITION_TYPE_BUY);
-   int sellPositions = CountPositions(POSITION_TYPE_SELL);
-   
-   // Check ADX conditions
-   bool adxCondition = true;
-   if(UseADXFilter) {
-      double adxValue = adxIndicator.Main(0);
-      adxCondition = adxValue >= MinADX && adxValue <= MaxADX;
-   }
-   
-   // Check RSI conditions
-   bool rsiCondition = true;
-   if(UseRSIFilter) {
-      double rsiValue = rsiIndicator.Main(0);
-      rsiCondition = rsiValue <= RSIOverbought && rsiValue >= RSIOversold;
-   }
-   
-   // Check conditions based on chosen direction
-   if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
-      if(UseBollingerFilter) {
-         // Calculate upper band minus 10 pips
-         double upperBandMinusPips = upperBand - (MinDistanceFromBB * _Point * 10);
-         
-         // Check if price is above (upper band - 10 pips)
-         if(currentBid > upperBandMinusPips) {
-            // Check if we should stop trading Buy based on Anti Drawdown
-            if(!UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_BUY)) {
-               canOpenBuy = true;
-            }
-         }
-      }
-   }
-   
-   if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
-      if(UseBollingerFilter) {
-         // Calculate lower band plus 10 pips
-         double lowerBandPlusPips = lowerBand + (MinDistanceFromBB * _Point * 10);
-         
-         // Check if price is below (lower band + 10 pips)
-         if(currentBid < lowerBandPlusPips) {
-            // Check if we should stop trading Sell based on Anti Drawdown
-            if(!UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_SELL)) {
-               canOpenSell = true;
-            }
-         }
-      }
-   }
-   
    // Open new trades if conditions are met
-   if(canOpenBuy) {
+   if(cachedCanTradeBuy) {
       OpenBuyOrder();
-      lastBidPrice = currentBid;  // Update lastBidPrice only after a trade
-      totalPriceMovement = 0;     // Reset total movement
-      lastOpenTime = currentTime; // Update last trade time
+      lastBidPrice = currentBid;
+      totalPriceMovement = 0;
+      lastOpenTime = currentTime;
    }
-   if(canOpenSell) {
+   if(cachedCanTradeSell) {
       OpenSellOrder();
-      lastBidPrice = currentBid;  // Update lastBidPrice only after a trade
-      totalPriceMovement = 0;     // Reset total movement
-      lastOpenTime = currentTime; // Update last trade time
+      lastBidPrice = currentBid;
+      totalPriceMovement = 0;
+      lastOpenTime = currentTime;
    }
    
    // Update trailing stops and check take profits
@@ -285,7 +260,7 @@ void OnTick() {
    
    // Check DCA conditions only for allowed directions
    CheckDCAConditions();
-
+   
    // Print status line every second
    if(currentTime - lastLogTime >= 1) {
       PrintStatusLine();
@@ -803,7 +778,9 @@ void CheckDCAConditions() {
 //+------------------------------------------------------------------+
 void UpdateInfoPanel() {
    if(!Info) return;
-
+   
+   UpdatePositionCache();
+   
    string prefix = "EA_Info_";
    int x = 10;
    int y = 20;
@@ -839,154 +816,58 @@ void UpdateInfoPanel() {
               x, y, profit >= 0 ? clrLime : clrRed);
    y += yStep;
    
-   // Display Bollinger Bands info with dynamic color
-   bollingerBands.Refresh();
-   double upperBand = bollingerBands.Upper(0);
-   double lowerBand = bollingerBands.Lower(0);
-   double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double distanceFromUpper = (currentBid - upperBand) / (_Point * 10);
-   double distanceFromLower = (lowerBand - currentBid) / (_Point * 10);
+   // Calculate drawdowns using cached values
+   double currentBuyDD = cachedBuyDD;
+   double currentSellDD = cachedSellDD;
+   double totalProfit = cachedBuyProfit + cachedSellProfit;
+   double currentTotalDD = cachedTotalDD;
    
-   CreateLabel(prefix + "BBFilter", StringFormat("BB Filter: %s", UseBollingerFilter ? "ON" : "OFF"), x, y, TextColor);
-   y += yStep;
-   
-   if(UseBollingerFilter) {
-      color bbColor = GetDynamicColor(distanceFromUpper, MinDistanceFromBB, -MinDistanceFromBB);
-      CreateLabel(prefix + "BBUpper", StringFormat("BB Upper: %.5f", upperBand), x, y, bbColor);
-      y += yStep;
-      CreateLabel(prefix + "BBLower", StringFormat("BB Lower: %.5f", lowerBand), x, y, bbColor);
-      y += yStep;
-      CreateLabel(prefix + "BBStatus", StringFormat("BB Status: %s", 
-                 currentBid > upperBand ? "Above Upper" : (currentBid < lowerBand ? "Below Lower" : "Inside Bands")), 
-                 x, y, bbColor);
-      y += yStep;
-   }
-   
-   // Display ADX info with dynamic color
-   if(UseADXFilter) {
-      CreateLabel(prefix + "ADXFilter", StringFormat("ADX Filter: %s", UseADXFilter ? "ON" : "OFF"), x, y, TextColor);
-      y += yStep;
-      
-      double adxValue = adxIndicator.Main(0);
-      color adxColor = GetDynamicColor(adxValue, MaxADX, MinADX);
-      CreateLabel(prefix + "ADXValue", StringFormat("ADX: %.1f (Min: %.1f, Max: %.1f)", 
-                 adxValue, MinADX, MaxADX), x, y, adxColor);
-      y += yStep;
-   }
-   
-   // Display RSI info with dynamic color
-   if(UseRSIFilter) {
-      CreateLabel(prefix + "RSIFilter", StringFormat("RSI Filter: %s", UseRSIFilter ? "ON" : "OFF"), x, y, TextColor);
-      y += yStep;
-      
-      double rsiValue = rsiIndicator.Main(0);
-      color rsiColor = GetDynamicColor(rsiValue, RSIOverbought, RSIOversold);
-      CreateLabel(prefix + "RSIValue", StringFormat("RSI: %.1f (Overbought: %.1f, Oversold: %.1f)", 
-                 rsiValue, RSIOverbought, RSIOversold), x, y, rsiColor);
-      y += yStep;
-   }
-   
-   // Calculate positions info
-   int totalBuyPositions = CountPositions(POSITION_TYPE_BUY);
-   int totalSellPositions = CountPositions(POSITION_TYPE_SELL);
-   double buyTotalProfit = 0;
-   double sellTotalProfit = 0;
-   double buyAveragePrice = 0;
-   double sellAveragePrice = 0;
-   double buyTotalLots = 0;
-   double sellTotalLots = 0;
-   
-   // Calculate profits and averages
-   for(int i = PositionsTotal() - 1; i >= 0; i--) {
-      if(PositionSelectByTicket(PositionGetTicket(i))) {
-         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
-            PositionGetString(POSITION_SYMBOL) == _Symbol) {
-            
-            double positionLots = PositionGetDouble(POSITION_VOLUME);
-            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
-               buyTotalProfit += PositionGetDouble(POSITION_PROFIT);
-               buyAveragePrice += PositionGetDouble(POSITION_PRICE_OPEN) * positionLots;
-               buyTotalLots += positionLots;
-            }
-            else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
-               sellTotalProfit += PositionGetDouble(POSITION_PROFIT);
-               sellAveragePrice += PositionGetDouble(POSITION_PRICE_OPEN) * positionLots;
-               sellTotalLots += positionLots;
-            }
-         }
-      }
-   }
-   
-   // Calculate average prices
-   if(buyTotalLots > 0) buyAveragePrice /= buyTotalLots;
-   if(sellTotalLots > 0) sellAveragePrice /= sellTotalLots;
-   
-   // Calculate drawdowns
-   double currentBuyDD = 0;
-   double currentSellDD = 0;
-   
-   if(buyTotalProfit < 0) {
-      currentBuyDD = MathAbs(buyTotalProfit) / initialBalance * 100;
-      maxBuyDD = MathMax(maxBuyDD, currentBuyDD);
-   }
-   
-   if(sellTotalProfit < 0) {
-      currentSellDD = MathAbs(sellTotalProfit) / initialBalance * 100;
-      maxSellDD = MathMax(maxSellDD, currentSellDD);
-   }
-   
-   // Calculate total drawdown
-   double totalProfit = buyTotalProfit + sellTotalProfit;
-   double currentTotalDD = 0;
-   
-   if(totalProfit < 0) {
-      currentTotalDD = MathAbs(totalProfit) / initialBalance * 100;
-      maxTotalDD = MathMax(maxTotalDD, currentTotalDD);
-   }
+   // Update max drawdowns
+   if(currentBuyDD > maxBuyDD) maxBuyDD = currentBuyDD;
+   if(currentSellDD > maxSellDD) maxSellDD = currentSellDD;
+   if(currentTotalDD > maxTotalDD) maxTotalDD = currentTotalDD;
    
    // Display Buy information
-   CreateLabel(prefix + "BuyPositions", StringFormat("Buy Positions: %d (%.2f lots)", totalBuyPositions, buyTotalLots), x, y, clrLime);
+   CreateLabel(prefix + "BuyPositions", StringFormat("Buy Positions: %d (%.2f lots)", 
+              cachedBuyPositions, cachedBuyLots), x, y, clrLime);
    y += yStep;
-   if(totalBuyPositions > 0) {
-      CreateLabel(prefix + "BuyProfit", StringFormat("Buy Profit: %.2f", buyTotalProfit), x, y, clrLime);
+   if(cachedBuyPositions > 0) {
+      CreateLabel(prefix + "BuyProfit", StringFormat("Buy Profit: %.2f", cachedBuyProfit), x, y, clrLime);
       y += yStep;
-      CreateLabel(prefix + "BuyAverage", StringFormat("Buy Avg Price: %.5f", buyAveragePrice), x, y, clrLime);
-      y += yStep;
-      CreateLabel(prefix + "BuyDD", StringFormat("Buy DD: %.2f%% (Max: %.2f%%)", currentBuyDD, maxBuyDD), x, y, 
-                 currentBuyDD > 0 ? clrOrange : clrLime);
+      CreateLabel(prefix + "BuyDD", StringFormat("Buy DD: %.2f%% (Max: %.2f%%)", 
+                 currentBuyDD, maxBuyDD), x, y, currentBuyDD > 0 ? clrOrange : clrLime);
       y += yStep;
    }
    
    // Display Sell information
-   CreateLabel(prefix + "SellPositions", StringFormat("Sell Positions: %d (%.2f lots)", totalSellPositions, sellTotalLots), x, y, clrRed);
+   CreateLabel(prefix + "SellPositions", StringFormat("Sell Positions: %d (%.2f lots)", 
+              cachedSellPositions, cachedSellLots), x, y, clrRed);
    y += yStep;
-   if(totalSellPositions > 0) {
-      CreateLabel(prefix + "SellProfit", StringFormat("Sell Profit: %.2f", sellTotalProfit), x, y, clrRed);
+   if(cachedSellPositions > 0) {
+      CreateLabel(prefix + "SellProfit", StringFormat("Sell Profit: %.2f", cachedSellProfit), x, y, clrRed);
       y += yStep;
-      CreateLabel(prefix + "SellAverage", StringFormat("Sell Avg Price: %.5f", sellAveragePrice), x, y, clrRed);
-      y += yStep;
-      CreateLabel(prefix + "SellDD", StringFormat("Sell DD: %.2f%% (Max: %.2f%%)", currentSellDD, maxSellDD), x, y, 
-                 currentSellDD > 0 ? clrOrange : clrRed);
+      CreateLabel(prefix + "SellDD", StringFormat("Sell DD: %.2f%% (Max: %.2f%%)", 
+                 currentSellDD, maxSellDD), x, y, currentSellDD > 0 ? clrOrange : clrRed);
       y += yStep;
    }
    
    // Display total information
    y += yStep;
-   int totalPositions = totalBuyPositions + totalSellPositions;
-   double totalLots = buyTotalLots + sellTotalLots;
-   CreateLabel(prefix + "TotalPositions", StringFormat("Total Positions: %d (%.2f lots)", totalPositions, totalLots), x, y, TextColor);
+   int totalPositions = cachedBuyPositions + cachedSellPositions;
+   double totalLots = cachedBuyLots + cachedSellLots;
+   CreateLabel(prefix + "TotalPositions", StringFormat("Total Positions: %d (%.2f lots)", 
+              totalPositions, totalLots), x, y, TextColor);
    y += yStep;
    CreateLabel(prefix + "TotalProfit", StringFormat("Total Profit: %.2f", totalProfit), x, y, TextColor);
    y += yStep;
-   CreateLabel(prefix + "TotalDD", StringFormat("Total DD: %.2f%% (Max: %.2f%%)", currentTotalDD, maxTotalDD), x, y, 
-              currentTotalDD > 0 ? clrOrange : TextColor);
+   CreateLabel(prefix + "TotalDD", StringFormat("Total DD: %.2f%% (Max: %.2f%%)", 
+              currentTotalDD, maxTotalDD), x, y, currentTotalDD > 0 ? clrOrange : TextColor);
    y += yStep;
    
    // Display next trade time
-   datetime currentTime = TimeCurrent();
    if(lastOpenTime > 0) {
       datetime nextOpenTime = lastOpenTime + 60;
-      if(nextOpenTime > currentTime) {
+      if(nextOpenTime > TimeCurrent()) {
          CreateLabel(prefix + "NextTrade", StringFormat("Next Trade: %s", 
                     TimeToString(nextOpenTime, TIME_MINUTES|TIME_SECONDS)), x, y, TextColor);
       }
@@ -1059,85 +940,44 @@ double CalculateTotalProfit() {
 }
 
 //+------------------------------------------------------------------+
-//| Check if we have both Buy and Sell positions open                 |
-//+------------------------------------------------------------------+
-bool HasBothPositionsOpen() {
-   int buyCount = CountPositions(POSITION_TYPE_BUY);
-   int sellCount = CountPositions(POSITION_TYPE_SELL);
-   return buyCount > 0 && sellCount > 0;
-}
-
-//+------------------------------------------------------------------+
 //| Check if we should stop trading in a direction                    |
 //+------------------------------------------------------------------+
-bool ShouldStopTradingDirection(ENUM_POSITION_TYPE positionType) {
-   if(!HasBothPositionsOpen()) return false;
-   
-   // Calculate total profit and weighted lot profit
-   double totalProfit = 0;
-   double totalLots = 0;
-   double weightedProfit = 0;
-   double buyProfit = 0;
-   double sellProfit = 0;
-   double buyLots = 0;
-   double sellLots = 0;
-   
-   for(int i = PositionsTotal() - 1; i >= 0; i--) {
-      if(PositionSelectByTicket(PositionGetTicket(i))) {
-         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
-            PositionGetString(POSITION_SYMBOL) == _Symbol) {
-            double positionLots = PositionGetDouble(POSITION_VOLUME);
-            double positionProfit = PositionGetDouble(POSITION_PROFIT);
-            totalProfit += positionProfit;
-            totalLots += positionLots;
-            weightedProfit += positionProfit / positionLots;
-            
-            // Calculate profit for each direction
-            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
-               buyProfit += positionProfit;
-               buyLots += positionLots;
-            }
-            else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
-               sellProfit += positionProfit;
-               sellLots += positionLots;
-            }
-         }
-      }
-   }
-   
-   // Calculate drawdowns for both directions
-   double buyDD = buyProfit < 0 ? MathAbs(buyProfit) / initialBalance * 100 : 0;
-   double sellDD = sellProfit < 0 ? MathAbs(sellProfit) / initialBalance * 100 : 0;
-   
-   // Check if we should stop trading in this direction based on drawdown
-   if(EnableStopNewTradesOnDirectionLoss) {
-      double directionDD = positionType == POSITION_TYPE_BUY ? buyDD : sellDD;
-      if(directionDD > StopNewTradesOnDirectionLoss) {
-         return true; // Stop trading in this direction
-      }
-   }
-   
-   // Check anti-drawdown conditions only if enabled
-   if(UseAntiDrawdown) {
-      // Calculate average profit per weighted lot
-      double avgProfitPerLot = totalLots > 0 ? weightedProfit / totalLots : 0;
-      
-      if(UseWeightedLotProfit) {
-         // Use profit per weighted lot
-         if(avgProfitPerLot >= MinProfitPerWeightedLot) {
-            CloseAllPositions();
-            return true;
-         }
-      } else {
-         // Use fixed currency amount
-         if(totalProfit >= MinTotalProfitToAvoidDD) {
-            CloseAllPositions();
-            return true;
-         }
-      }
-   }
-   
-   return false;
+bool ShouldStopTradingDirection(ENUM_POSITION_TYPE direction) {
+    if(!EnableStopNewTradesOnDirectionLoss) return false;
+    
+    // Calculate drawdowns
+    double buyDD = cachedBuyDD;
+    double sellDD = cachedSellDD;
+    double totalDD = cachedTotalDD;
+    
+    // Get direction-specific drawdown
+    double directionDD = (direction == POSITION_TYPE_BUY) ? buyDD : sellDD;
+    
+    Print("=== DEBUG - ShouldStopTradingDirection ===");
+    Print("Direction: ", EnumToString(direction));
+    Print("EnableStopNewTradesOnDirectionLoss: ", EnableStopNewTradesOnDirectionLoss);
+    Print("StopNewTradesOnDirectionLoss: ", StopNewTradesOnDirectionLoss, "%");
+    Print("Buy DD: ", buyDD, "%");
+    Print("Sell DD: ", sellDD, "%");
+    Print("Total DD: ", totalDD, "%");
+    Print("Initial Balance: ", initialBalance);
+    Print("Cached Buy Profit: ", cachedBuyProfit);
+    Print("Cached Sell Profit: ", cachedSellProfit);
+    Print("Current Direction DD: ", directionDD, "%");
+    Print("StopNewTradesOnDirectionLoss: ", StopNewTradesOnDirectionLoss, "%");
+    
+    // Check if either direction-specific or total drawdown exceeds limit
+    if(directionDD >= StopNewTradesOnDirectionLoss || totalDD >= StopNewTradesOnDirectionLoss) {
+        Print("=== STOP TRADING ===");
+        Print("Direction: ", EnumToString(direction));
+        Print("Reason: Direction DD ", directionDD, "% >= ", StopNewTradesOnDirectionLoss, "% OR Total DD ", totalDD, "% >= ", StopNewTradesOnDirectionLoss, "%");
+        return true;
+    }
+    
+    Print("=== CONTINUE TRADING ===");
+    Print("Direction: ", EnumToString(direction));
+    Print("Reason: DD ", directionDD, "% < ", StopNewTradesOnDirectionLoss, "% AND Total DD ", totalDD, "% < ", StopNewTradesOnDirectionLoss, "%");
+    return false;
 }
 
 //+------------------------------------------------------------------+
@@ -1269,4 +1109,201 @@ color GetDynamicColor(double value, double maxValue, double minValue) {
       // From yellow to green
       return clrGreen;
    }
+}
+
+//+------------------------------------------------------------------+
+//| Update Position Cache                                              |
+//+------------------------------------------------------------------+
+void UpdatePositionCache() {
+   datetime currentTime = TimeCurrent();
+   
+   // Vérifier si une mise à jour est nécessaire
+   if(!cacheNeedsUpdate && currentTime - lastCacheUpdate < cacheUpdateInterval) {
+      return;
+   }
+   
+   // Réinitialiser les valeurs
+   cachedBuyProfit = 0;
+   cachedSellProfit = 0;
+   cachedBuyLots = 0;
+   cachedSellLots = 0;
+   cachedBuyPositions = 0;
+   cachedSellPositions = 0;
+   
+   // Mettre à jour les valeurs
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol) {
+            double positionLots = PositionGetDouble(POSITION_VOLUME);
+            double positionProfit = PositionGetDouble(POSITION_PROFIT);
+            
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+               cachedBuyProfit += positionProfit;
+               cachedBuyLots += positionLots;
+               cachedBuyPositions++;
+            }
+            else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
+               cachedSellProfit += positionProfit;
+               cachedSellLots += positionLots;
+               cachedSellPositions++;
+            }
+         }
+      }
+   }
+   
+   lastCacheUpdate = currentTime;
+   cacheNeedsUpdate = false;
+}
+
+//+------------------------------------------------------------------+
+//| Marquer le cache comme nécessitant une mise à jour                 |
+//+------------------------------------------------------------------+
+void MarkCacheForUpdate() {
+   cacheNeedsUpdate = true;
+}
+
+//+------------------------------------------------------------------+
+//| Update Indicators                                                  |
+//+------------------------------------------------------------------+
+void UpdateIndicators() {
+   datetime currentTime = TimeCurrent();
+   if(currentTime - lastIndicatorUpdate < indicatorUpdateInterval) return;
+   
+   if(UseBollingerFilter) {
+      bollingerBands.Refresh();
+      cachedUpperBand = bollingerBands.Upper(0);
+      cachedLowerBand = bollingerBands.Lower(0);
+   }
+   
+   if(UseADXFilter) {
+      adxIndicator.Refresh();
+      cachedADXValue = adxIndicator.Main(0);
+   }
+   
+   if(UseRSIFilter) {
+      rsiIndicator.Refresh();
+      cachedRSIValue = rsiIndicator.Main(0);
+   }
+   
+   lastIndicatorUpdate = currentTime;
+}
+
+//+------------------------------------------------------------------+
+//| Update Drawdowns                                                  |
+//+------------------------------------------------------------------+
+void UpdateDrawdowns() {
+   datetime currentTime = TimeCurrent();
+   if(currentTime - lastDDUpdate < DDUpdateInterval) return;
+   
+   UpdatePositionCache();
+   
+   // Get current balance
+   double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   
+   Print("=== DEBUG - UpdateDrawdowns ===");
+   Print("Current Balance: ", currentBalance);
+   Print("Initial Balance: ", initialBalance);
+   Print("Buy Profit: ", cachedBuyProfit);
+   Print("Sell Profit: ", cachedSellProfit);
+   
+   // Calculate drawdowns based on current balance
+   if(cachedBuyProfit < 0) {
+      cachedBuyDD = MathAbs(cachedBuyProfit) / currentBalance * 100;
+      Print("Buy DD: ", cachedBuyDD, "% (", cachedBuyProfit, " / ", currentBalance, " * 100)");
+   } else {
+      cachedBuyDD = 0;
+   }
+   
+   if(cachedSellProfit < 0) {
+      cachedSellDD = MathAbs(cachedSellProfit) / currentBalance * 100;
+      Print("Sell DD: ", cachedSellDD, "% (", cachedSellProfit, " / ", currentBalance, " * 100)");
+   } else {
+      cachedSellDD = 0;
+   }
+   
+   double totalProfit = cachedBuyProfit + cachedSellProfit;
+   if(totalProfit < 0) {
+      cachedTotalDD = MathAbs(totalProfit) / currentBalance * 100;
+      Print("Total DD: ", cachedTotalDD, "% (", totalProfit, " / ", currentBalance, " * 100)");
+   } else {
+      cachedTotalDD = 0;
+   }
+   
+   // Update max drawdowns
+   if(cachedBuyDD > maxBuyDD) {
+      maxBuyDD = cachedBuyDD;
+      Print("New Max Buy DD: ", maxBuyDD, "%");
+   }
+   if(cachedSellDD > maxSellDD) {
+      maxSellDD = cachedSellDD;
+      Print("New Max Sell DD: ", maxSellDD, "%");
+   }
+   if(cachedTotalDD > maxTotalDD) {
+      maxTotalDD = cachedTotalDD;
+      Print("New Max Total DD: ", maxTotalDD, "%");
+   }
+   
+   lastDDUpdate = currentTime;
+}
+
+//+------------------------------------------------------------------+
+//| Check Trading Conditions                                          |
+//+------------------------------------------------------------------+
+void CheckTradingConditions() {
+   datetime currentTime = TimeCurrent();
+   if(currentTime - lastConditionCheck < conditionCheckInterval) return;
+   
+   // Reset conditions
+   cachedCanTradeBuy = false;
+   cachedCanTradeSell = false;
+   
+   // Get current price
+   double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   
+   Print("=== DEBUG - CheckTradingConditions ===");
+   Print("Current Bid: ", currentBid);
+   Print("Upper Band: ", cachedUpperBand);
+   Print("Lower Band: ", cachedLowerBand);
+   
+   // Check conditions based on chosen direction
+   if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
+      if(UseBollingerFilter) {
+         double upperBandMinusPips = cachedUpperBand - (MinDistanceFromBB * _Point * 10);
+         Print("Buy Line (Upper Band - MinDistance): ", upperBandMinusPips);
+         
+         if(currentBid > upperBandMinusPips) {
+            Print("Price above Buy Line - Checking drawdown...");
+            if(!UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_BUY)) {
+               cachedCanTradeBuy = true;
+               Print("BUY position allowed");
+            } else {
+               Print("BUY position blocked by drawdown check");
+            }
+         } else {
+            Print("Price below Buy Line - No BUY position");
+         }
+      }
+   }
+   
+   if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
+      if(UseBollingerFilter) {
+         double lowerBandPlusPips = cachedLowerBand + (MinDistanceFromBB * _Point * 10);
+         Print("Sell Line (Lower Band + MinDistance): ", lowerBandPlusPips);
+         
+         if(currentBid < lowerBandPlusPips) {
+            Print("Price below Sell Line - Checking drawdown...");
+            if(!UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_SELL)) {
+               cachedCanTradeSell = true;
+               Print("SELL position allowed");
+            } else {
+               Print("SELL position blocked by drawdown check");
+            }
+         } else {
+            Print("Price above Sell Line - No SELL position");
+         }
+      }
+   }
+   
+   lastConditionCheck = currentTime;
 }
