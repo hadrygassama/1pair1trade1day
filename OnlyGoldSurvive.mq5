@@ -24,9 +24,9 @@ input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Trading direction
 input int      Magic = 123456;         // Expert Advisor ID
 
 input group    "=== Position Sizing ==="
-input double   Lots = 0.1;             // Base lot size
+input double   Lots = 0.5;             // Base lot size
 input double   LotMultiplier = 1.5;    // Lot size multiplier
-input double   MaxLot = 1.0;           // Maximum lot size
+input double   MaxLot = 1.5;           // Maximum lot size
 input bool     EnableMaxPosition = true;     // Enable position limits
 input int      MaxBuyPositions = 30;    // Maximum Buy positions
 input int      MaxSellPositions = 30;   // Maximum Sell positions
@@ -40,11 +40,10 @@ input int      PipsStep = 20;          // Price step in pips
 input int      MaxSpread = 50;         // Maximum spread in pips
 
 input group    "=== Trading Hours ==="
-input int      BrokerGMTOffset = 3;    // Broker GMT offset
-input int      TimeStartHour = 0;      // Trading start hour (GMT)
-input int      TimeStartMinute = 0;    // Trading start minute
-input int      TimeEndHour = 23;       // Trading end hour (GMT)
-input int      TimeEndMinute = 59;     // Trading end minute
+input int      TimeStartHour = 0;      // Trading start hour (Broker GMT time)
+input int      TimeStartMinute = 0;    // Trading start minute (Broker GMT time)
+input int      TimeEndHour = 23;       // Trading end hour (Broker GMT time)
+input int      TimeEndMinute = 59;     // Trading end minute (Broker GMT time)
 
 input group    "=== Bollinger Bands Filter ==="
 input bool     UseBollingerFilter = true;  // Enable BB filter
@@ -190,53 +189,69 @@ void OnTick() {
    // Get current price
    double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    
-   // Check trading hours
-   datetime currentTime = TimeCurrent();
+   // Vérification de la connexion au serveur
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED)) {
+      Print("=== ERREUR - Pas de connexion au serveur ===");
+      PrintStatusLine();
+      return;
+   }
+   
+   // Check trading hours using server GMT time
+   datetime currentTime = TimeCurrent();  // Server local time
+   datetime gmtTime = TimeGMT();         // Server GMT time (trading server time)
+   datetime localTime = TimeLocal();     // Computer local time
+   
    MqlDateTime timeStruct;
-   TimeToStruct(currentTime, timeStruct);
+   TimeToStruct(gmtTime, timeStruct);
    
-   // Get broker time
-   int brokerHour = timeStruct.hour;
-   int brokerMinute = timeStruct.min;
-   
-   // Convert broker time (GMT+3) to GMT
-   int gmtHour = brokerHour - BrokerGMTOffset;
-   if(gmtHour < 0) {
-      gmtHour += 24;
-      // Si on passe à la journée précédente, on ne trade pas
-      Print("Outside trading hours - Day change detected");
-      PrintStatusLine();
-      return;
-   }
-   if(gmtHour >= 24) {
-      gmtHour -= 24;
-      // Si on passe à la journée suivante, on ne trade pas
-      Print("Outside trading hours - Day change detected");
-      PrintStatusLine();
-      return;
-   }
+   int gmtHour = timeStruct.hour;
+   int gmtMinute = timeStruct.min;
    
    Print("=== DEBUG - Trading Hours ===");
-   Print("Broker Time: ", brokerHour, ":", brokerMinute, " (GMT+", BrokerGMTOffset, ")");
-   Print("GMT Time: ", gmtHour, ":", brokerMinute);
+   Print("Server Local Time: ", TimeToString(currentTime, TIME_MINUTES|TIME_SECONDS));
+   Print("Server GMT Time: ", TimeToString(gmtTime, TIME_MINUTES|TIME_SECONDS));
+   Print("Computer Local Time: ", TimeToString(localTime, TIME_MINUTES|TIME_SECONDS));
    Print("Trading Hours: ", TimeStartHour, ":", TimeStartMinute, " to ", TimeEndHour, ":", TimeEndMinute, " GMT");
    
    // Convert trading hours to minutes for comparison
-   int currentTimeInMinutes = gmtHour * 60 + brokerMinute;
+   int currentTimeInMinutes = gmtHour * 60 + gmtMinute;
    int startTimeInMinutes = TimeStartHour * 60 + TimeStartMinute;
    int endTimeInMinutes = TimeEndHour * 60 + TimeEndMinute;
    
    if(currentTimeInMinutes < startTimeInMinutes || currentTimeInMinutes >= endTimeInMinutes) {
-      Print("Outside trading hours - Current GMT: ", gmtHour, ":", brokerMinute);
+      Print("Outside trading hours - Current GMT: ", gmtHour, ":", gmtMinute);
       PrintStatusLine();
       return;
    }
    
    // Check spread
    double currentSpread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double spreadInPips = currentSpread / (_Point * 10);
+   
+   // Get the number of digits for the symbol
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   
+   // Calculate spread in pips based on the number of digits
+   double spreadInPips;
+   if(digits == 2 || digits == 3) {
+      // For pairs with 2 or 3 digits (like XAUUSD)
+      spreadInPips = currentSpread * 10;
+   } else if(digits == 4 || digits == 5) {
+      // For pairs with 4 or 5 digits (like EURUSD)
+      spreadInPips = currentSpread * 10000;
+   } else {
+      // Default case, should not happen with standard pairs
+      spreadInPips = currentSpread / _Point;
+   }
+   
+   Print("=== DEBUG - Spread Calculation ===");
+   Print("Symbol: ", _Symbol);
+   Print("Digits: ", digits);
+   Print("Current Spread: ", currentSpread);
+   Print("Spread in Pips: ", spreadInPips);
+   Print("Max Spread: ", MaxSpread);
    
    if(spreadInPips > MaxSpread) {
+      Print("Spread too high: ", spreadInPips, " > ", MaxSpread, " pips");
       PrintStatusLine();
       return;
    }
@@ -526,20 +541,30 @@ void UpdateTrailingStops() {
    if(buyPositionCount > 0) buyAveragePrice /= buyTotalLots;
    if(sellPositionCount > 0) sellAveragePrice /= sellTotalLots;
    
-   // Check if we have both positions and total profit is greater than 10
-   bool hasBothPositions = buyPositionCount > 0 && sellPositionCount > 0;
+   // Calculate global profit and lots
    double totalProfit = buyTotalProfit + sellTotalProfit;
-   bool shouldStopProfits = hasBothPositions && totalProfit >= 10.0;
+   double totalLots = buyTotalLots + sellTotalLots;
    
-   // If we have both positions and total profit is greater than 10, close all positions
-   if(shouldStopProfits) {
-      if(ShowTradeLogs) PrintFormat("Closing all positions - Total profit: %.2f >= 10.0", totalProfit);
-      CloseAllPositions();
-      return;
+   // Check global weighted profit per lot
+   if(UseWeightedLotProfit && totalLots > 0) {
+      double globalProfitPerLot = totalProfit / totalLots;
+      
+      // If we have positions on both sides
+      if(buyPositionCount > 0 && sellPositionCount > 0) {
+         // Only close if profit per lot is positive AND above threshold
+         if(globalProfitPerLot > 0 && globalProfitPerLot >= MinProfitPerWeightedLot) {
+            if(ShowTradeLogs) {
+               PrintFormat("Closing all positions - Profit per lot: %.2f >= %.2f AND Total profit: %.2f", 
+                          globalProfitPerLot, MinProfitPerWeightedLot, totalProfit);
+            }
+            CloseAllPositions();
+            return;
+         }
+      }
    }
    
    // If we have both positions, don't use TP or Trailing
-   if(hasBothPositions) {
+   if(buyPositionCount > 0 && sellPositionCount > 0) {
       return;
    }
    
@@ -785,15 +810,14 @@ void UpdateInfoPanel() {
    int x = 10;
    int y = 20;
    int yStep = FontSize + 10;
+   int totalLines = 0;  // Compteur pour le nombre total de lignes
    
    ObjectsDeleteAll(0, prefix);
-   
-   // Create background rectangle
-   CreateRectangle(prefix + "Background", x - 5, y - 5, 300, 600, clrBlack, 200);
    
    // Display EA status
    CreateLabel(prefix + "Title", "=== EA Status ===", x, y, TextColor);
    y += yStep;
+   totalLines++;
    
    // Display current spread with dynamic color
    double spread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -801,6 +825,7 @@ void UpdateInfoPanel() {
    color spreadColor = GetDynamicColor(spreadInPips, MaxSpread, 0);
    CreateLabel(prefix + "Spread", StringFormat("Spread: %.1f pips", spreadInPips), x, y, spreadColor);
    y += yStep;
+   totalLines++;
    
    // Display account information
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
@@ -810,11 +835,14 @@ void UpdateInfoPanel() {
    
    CreateLabel(prefix + "Balance", StringFormat("Balance: %.2f", balance), x, y, TextColor);
    y += yStep;
+   totalLines++;
    CreateLabel(prefix + "Equity", StringFormat("Equity: %.2f", equity), x, y, TextColor);
    y += yStep;
+   totalLines++;
    CreateLabel(prefix + "Profit", StringFormat("Profit: %.2f (%.2f%%)", profit, profitPercent), 
               x, y, profit >= 0 ? clrLime : clrRed);
    y += yStep;
+   totalLines++;
    
    // Calculate drawdowns using cached values
    double currentBuyDD = cachedBuyDD;
@@ -831,38 +859,48 @@ void UpdateInfoPanel() {
    CreateLabel(prefix + "BuyPositions", StringFormat("Buy Positions: %d (%.2f lots)", 
               cachedBuyPositions, cachedBuyLots), x, y, clrLime);
    y += yStep;
+   totalLines++;
    if(cachedBuyPositions > 0) {
       CreateLabel(prefix + "BuyProfit", StringFormat("Buy Profit: %.2f", cachedBuyProfit), x, y, clrLime);
       y += yStep;
+      totalLines++;
       CreateLabel(prefix + "BuyDD", StringFormat("Buy DD: %.2f%% (Max: %.2f%%)", 
                  currentBuyDD, maxBuyDD), x, y, currentBuyDD > 0 ? clrOrange : clrLime);
       y += yStep;
+      totalLines++;
    }
    
    // Display Sell information
    CreateLabel(prefix + "SellPositions", StringFormat("Sell Positions: %d (%.2f lots)", 
               cachedSellPositions, cachedSellLots), x, y, clrRed);
    y += yStep;
+   totalLines++;
    if(cachedSellPositions > 0) {
       CreateLabel(prefix + "SellProfit", StringFormat("Sell Profit: %.2f", cachedSellProfit), x, y, clrRed);
       y += yStep;
+      totalLines++;
       CreateLabel(prefix + "SellDD", StringFormat("Sell DD: %.2f%% (Max: %.2f%%)", 
                  currentSellDD, maxSellDD), x, y, currentSellDD > 0 ? clrOrange : clrRed);
       y += yStep;
+      totalLines++;
    }
    
    // Display total information
    y += yStep;
+   totalLines++;
    int totalPositions = cachedBuyPositions + cachedSellPositions;
    double totalLots = cachedBuyLots + cachedSellLots;
    CreateLabel(prefix + "TotalPositions", StringFormat("Total Positions: %d (%.2f lots)", 
               totalPositions, totalLots), x, y, TextColor);
    y += yStep;
+   totalLines++;
    CreateLabel(prefix + "TotalProfit", StringFormat("Total Profit: %.2f", totalProfit), x, y, TextColor);
    y += yStep;
+   totalLines++;
    CreateLabel(prefix + "TotalDD", StringFormat("Total DD: %.2f%% (Max: %.2f%%)", 
               currentTotalDD, maxTotalDD), x, y, currentTotalDD > 0 ? clrOrange : TextColor);
    y += yStep;
+   totalLines++;
    
    // Display next trade time
    if(lastOpenTime > 0) {
@@ -870,8 +908,14 @@ void UpdateInfoPanel() {
       if(nextOpenTime > TimeCurrent()) {
          CreateLabel(prefix + "NextTrade", StringFormat("Next Trade: %s", 
                     TimeToString(nextOpenTime, TIME_MINUTES|TIME_SECONDS)), x, y, TextColor);
+         y += yStep;
+         totalLines++;
       }
    }
+   
+   // Create background rectangle with dynamic height
+   int panelHeight = totalLines * yStep + 20; // 20 pixels de marge
+   CreateRectangle(prefix + "Background", x - 5, 15, 300, panelHeight, clrBlack, 200);
 }
 
 //+------------------------------------------------------------------+
