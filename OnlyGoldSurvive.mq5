@@ -74,11 +74,6 @@ input bool     Info = true;            // Show panel
 input int      FontSize = 12;          // Font size
 input color    TextColor = clrWhite;   // Text color
 
-input group    "=== Anti-Drawdown System ==="
-input bool     UseAntiDrawdown = true;  // Enable anti-drawdown system
-input double   ImbalanceMultiplier = 2.0; // Multiplier for TP/TS when positions are imbalanced
-input double   LossRatio = 0.5;        // Ratio of loss to trigger closure (0.5 = 50% loss)
-
 // Global variables
 CTrade trade;
 CiBands bollingerBands;
@@ -97,8 +92,6 @@ double totalPriceMovement = 0;  // Variable to track total price movement
 datetime lastLogTime = 0;        // Variable for log filtering
 double lastSpread = 0;            // Variable for log filtering
 double lastLoggedMovement = 0;    // Variable for log filtering
-bool stopBuyPositions = false;  // Flag to stop opening Buy positions
-bool stopSellPositions = false; // Flag to stop opening Sell positions
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                      |
@@ -241,18 +234,6 @@ void OnTick() {
    int buyPositions = CountPositions(POSITION_TYPE_BUY);
    int sellPositions = CountPositions(POSITION_TYPE_SELL);
    
-   // Reset stop flags if all positions of one direction are closed
-   if(buyPositions == 0 && stopBuyPositions) {
-      Print("All Buy positions closed - Resetting both stop flags");
-      stopBuyPositions = false;
-      stopSellPositions = false;
-   }
-   if(sellPositions == 0 && stopSellPositions) {
-      Print("All Sell positions closed - Resetting both stop flags");
-      stopSellPositions = false;
-      stopBuyPositions = false;
-   }
-   
    // Check ADX conditions
    bool adxCondition = true;
    if(UseADXFilter) {
@@ -329,9 +310,6 @@ void OnTick() {
    
    // Check DCA conditions only for allowed directions
    CheckDCAConditions();
-   
-   // Check and handle position imbalance
-   HandlePositionImbalance();
 }
 
 //+------------------------------------------------------------------+
@@ -341,12 +319,6 @@ void OpenBuyOrder() {
    // Check if Buy is allowed
    if(TradeDirection == TRADE_SELL_ONLY) return;
    
-   // Check if we should stop opening Buy positions
-   if(stopBuyPositions) {
-      Print("Anti-drawdown: Buy positions stopped due to existing Sell positions");
-      return;
-   }
-   
    // Check minimum delay
    datetime currentTime = TimeCurrent();
    if(UseMinTime && currentTime - lastBuyPositionTime < OpenTime) {
@@ -355,18 +327,11 @@ void OpenBuyOrder() {
    }
    
    int totalBuyPositions = CountPositions(POSITION_TYPE_BUY);
-   int totalSellPositions = CountPositions(POSITION_TYPE_SELL);
    
    // Check if we've reached the maximum number of Buy positions
    if(totalBuyPositions >= MaxBuyPositions) {
       Print("Maximum Buy positions reached: ", totalBuyPositions, " >= ", MaxBuyPositions);
       return;
-   }
-   
-   // Anti-drawdown check: Allow opening Buy positions if we have Sells but no Buys
-   if(UseAntiDrawdown && totalSellPositions > 0 && totalBuyPositions == 0) {
-      Print("Anti-drawdown: Opening first Buy position to balance Sell positions");
-      stopSellPositions = true; // Stop opening new Sell positions
    }
    
    if(totalBuyPositions < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
@@ -379,11 +344,11 @@ void OpenBuyOrder() {
          
          // Calculate lot size with multiplier
          double calculatedLots = Lots * MathPow(LotMultiplier, totalBuyPositions);
-         calculatedLots = MathMin(calculatedLots, MaxLot);
+         calculatedLots = MathMin(calculatedLots, MaxLot); // Ensure we don't exceed MaxLot
          
          // Round to the nearest valid lot size
          calculatedLots = MathFloor(calculatedLots / lotStep) * lotStep;
-         calculatedLots = MathMax(calculatedLots, minLot);
+         calculatedLots = MathMax(calculatedLots, minLot); // Ensure we don't go below minimum
          
          // Check minimum distance from last position
          if(CheckMinimumDistance(POSITION_TYPE_BUY, MinDistancePips)) {
@@ -392,7 +357,7 @@ void OpenBuyOrder() {
             }
             else {
                Print("Buy order placed successfully with lots: ", calculatedLots);
-               lastBuyPositionTime = currentTime;
+               lastBuyPositionTime = currentTime; // Update time of last Buy position
             }
          }
       }
@@ -406,12 +371,6 @@ void OpenSellOrder() {
    // Check if Sell is allowed
    if(TradeDirection == TRADE_BUY_ONLY) return;
    
-   // Check if we should stop opening Sell positions
-   if(stopSellPositions) {
-      Print("Anti-drawdown: Sell positions stopped due to existing Buy positions");
-      return;
-   }
-   
    // Check minimum delay
    datetime currentTime = TimeCurrent();
    if(UseMinTime && currentTime - lastSellPositionTime < OpenTime) {
@@ -420,18 +379,11 @@ void OpenSellOrder() {
    }
    
    int totalSellPositions = CountPositions(POSITION_TYPE_SELL);
-   int totalBuyPositions = CountPositions(POSITION_TYPE_BUY);
    
    // Check if we've reached the maximum number of Sell positions
    if(totalSellPositions >= MaxSellPositions) {
       Print("Maximum Sell positions reached: ", totalSellPositions, " >= ", MaxSellPositions);
       return;
-   }
-   
-   // Anti-drawdown check: Allow opening Sell positions if we have Buys but no Sells
-   if(UseAntiDrawdown && totalBuyPositions > 0 && totalSellPositions == 0) {
-      Print("Anti-drawdown: Opening first Sell position to balance Buy positions");
-      stopBuyPositions = true; // Stop opening new Buy positions
    }
    
    if(totalSellPositions < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
@@ -444,11 +396,11 @@ void OpenSellOrder() {
          
          // Calculate lot size with multiplier
          double calculatedLots = Lots * MathPow(LotMultiplier, totalSellPositions);
-         calculatedLots = MathMin(calculatedLots, MaxLot);
+         calculatedLots = MathMin(calculatedLots, MaxLot); // Ensure we don't exceed MaxLot
          
          // Round to the nearest valid lot size
          calculatedLots = MathFloor(calculatedLots / lotStep) * lotStep;
-         calculatedLots = MathMax(calculatedLots, minLot);
+         calculatedLots = MathMax(calculatedLots, minLot); // Ensure we don't go below minimum
          
          // Check minimum distance from last position
          if(CheckMinimumDistance(POSITION_TYPE_SELL, MinDistancePips)) {
@@ -457,7 +409,7 @@ void OpenSellOrder() {
             }
             else {
                Print("Sell order placed successfully with lots: ", calculatedLots);
-               lastSellPositionTime = currentTime;
+               lastSellPositionTime = currentTime; // Update time of last Sell position
             }
          }
       }
@@ -601,19 +553,18 @@ void UpdateTrailingStops() {
                      PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
                      
                      double currentSL = PositionGetDouble(POSITION_SL);
-                     double multiplier = (UseAntiDrawdown && sellPositionCount > 0) ? ImbalanceMultiplier : 1.0;
                      
                      if(currentSL < buyAveragePrice || currentSL == 0) {
-                        if(currentBid - (Tral + TralStart) * _Point * multiplier >= buyAveragePrice) {
+                        if(currentBid - (Tral + TralStart) * _Point >= buyAveragePrice) {
                            trade.PositionModify(PositionGetTicket(i),
-                                              buyAveragePrice + TralStart * _Point * multiplier,
+                                              buyAveragePrice + TralStart * _Point,
                                               PositionGetDouble(POSITION_TP));
                         }
                      }
                      else if(currentSL >= buyAveragePrice) {
-                        if(currentBid - Tral * _Point * multiplier > currentSL) {
+                        if(currentBid - Tral * _Point > currentSL) {
                            trade.PositionModify(PositionGetTicket(i),
-                                              currentBid - Tral * _Point * multiplier,
+                                              currentBid - Tral * _Point,
                                               PositionGetDouble(POSITION_TP));
                         }
                      }
@@ -642,19 +593,18 @@ void UpdateTrailingStops() {
                      PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
                      
                      double currentSL = PositionGetDouble(POSITION_SL);
-                     double multiplier = (UseAntiDrawdown && buyPositionCount > 0) ? ImbalanceMultiplier : 1.0;
                      
                      if(currentSL > sellAveragePrice || currentSL == 0) {
-                        if(currentAsk + (Tral + TralStart) * _Point * multiplier <= sellAveragePrice) {
+                        if(currentAsk + (Tral + TralStart) * _Point <= sellAveragePrice) {
                            trade.PositionModify(PositionGetTicket(i),
-                                              sellAveragePrice - TralStart * _Point * multiplier,
+                                              sellAveragePrice - TralStart * _Point,
                                               PositionGetDouble(POSITION_TP));
                         }
                      }
                      else if(currentSL <= sellAveragePrice) {
-                        if(currentAsk + Tral * _Point * multiplier < currentSL) {
+                        if(currentAsk + Tral * _Point < currentSL) {
                            trade.PositionModify(PositionGetTicket(i),
-                                              currentAsk + Tral * _Point * multiplier,
+                                              currentAsk + Tral * _Point,
                                               PositionGetDouble(POSITION_TP));
                         }
                      }
@@ -950,77 +900,4 @@ void CreateLabel(string name, string text, int x, int y, color clr) {
    
    ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
    ChartRedraw(0);
-}
-
-//+------------------------------------------------------------------+
-//| Check and Handle Position Imbalance                                |
-//+------------------------------------------------------------------+
-void HandlePositionImbalance() {
-   if(!UseAntiDrawdown) return;
-   
-   // Check Buy positions when stopBuyPositions is true
-   if(stopBuyPositions) {
-      double oldestBuyLoss = 0;
-      double sellLoss = 0;
-      int buyPositions = 0;
-      
-      // Find oldest Buy position and calculate total Sell loss
-      for(int i = PositionsTotal() - 1; i >= 0; i--) {
-         if(PositionSelectByTicket(PositionGetTicket(i))) {
-            if(PositionGetInteger(POSITION_MAGIC) == Magic && 
-               PositionGetString(POSITION_SYMBOL) == _Symbol) {
-               
-               if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
-                  buyPositions++;
-                  // Keep track of the oldest Buy position's loss
-                  if(oldestBuyLoss == 0) {
-                     oldestBuyLoss = MathAbs(PositionGetDouble(POSITION_PROFIT));
-                  }
-               } else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
-                  sellLoss += MathAbs(PositionGetDouble(POSITION_PROFIT));
-               }
-            }
-         }
-      }
-      
-      // If Sell loss reaches target ratio of oldest Buy loss, close all Buy positions
-      if(oldestBuyLoss > 0 && sellLoss >= (oldestBuyLoss * LossRatio) && buyPositions > 0) {
-         Print("Sell loss reached ", LossRatio * 100, "% of oldest Buy loss - Closing all Buy positions");
-         Print("Oldest Buy Loss: ", oldestBuyLoss, ", Sell Loss: ", sellLoss);
-         ClosePositionsInDirection(POSITION_TYPE_BUY);
-      }
-   }
-   
-   // Check Sell positions when stopSellPositions is true
-   if(stopSellPositions) {
-      double oldestSellLoss = 0;
-      double buyLoss = 0;
-      int sellPositions = 0;
-      
-      // Find oldest Sell position and calculate total Buy loss
-      for(int i = PositionsTotal() - 1; i >= 0; i--) {
-         if(PositionSelectByTicket(PositionGetTicket(i))) {
-            if(PositionGetInteger(POSITION_MAGIC) == Magic && 
-               PositionGetString(POSITION_SYMBOL) == _Symbol) {
-               
-               if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
-                  buyLoss += MathAbs(PositionGetDouble(POSITION_PROFIT));
-               } else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
-                  sellPositions++;
-                  // Keep track of the oldest Sell position's loss
-                  if(oldestSellLoss == 0) {
-                     oldestSellLoss = MathAbs(PositionGetDouble(POSITION_PROFIT));
-                  }
-               }
-            }
-         }
-      }
-      
-      // If Buy loss reaches target ratio of oldest Sell loss, close all Sell positions
-      if(oldestSellLoss > 0 && buyLoss >= (oldestSellLoss * LossRatio) && sellPositions > 0) {
-         Print("Buy loss reached ", LossRatio * 100, "% of oldest Sell loss - Closing all Sell positions");
-         Print("Oldest Sell Loss: ", oldestSellLoss, ", Buy Loss: ", buyLoss);
-         ClosePositionsInDirection(POSITION_TYPE_SELL);
-      }
-   }
 } 
