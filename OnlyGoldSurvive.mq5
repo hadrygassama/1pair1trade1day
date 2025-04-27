@@ -53,7 +53,7 @@ input ENUM_APPLIED_PRICE BBPrice = PRICE_CLOSE; // Bollinger Bands price type
 input int      MinDistanceFromBB = 10;  // Minimum distance from Bollinger Bands in pips
 
 input group    "=== ADX Filter ==="
-input bool     UseADXFilter = false;     // Enable ADX filter
+input bool     UseADXFilter = true;     // Enable ADX filter
 input int      ADXPeriod = 14;          // ADX period
 input double   MinADX = 25.0;           // Minimum ADX value
 input double   MaxADX = 100.0;           // Maximum ADX value
@@ -77,7 +77,7 @@ input bool     ShowTradeLogs = false;  // Show trade logs
 
 input group    "=== Anti Drawdown Settings ==="
 input bool     UseAntiDrawdown = true;     // Enable anti-drawdown system
-input double   MaxDrawdown = 10.0;         // Maximum drawdown in account currency
+input double   MaxDrawdown = 50.0;         // Maximum drawdown in account currency
 
 // Global variables
 CTrade trade;
@@ -784,17 +784,27 @@ void CheckDCAConditions() {
    double upperBand = bollingerBands.Upper(0);
    double lowerBand = bollingerBands.Lower(0);
    
+   // Update ADX if enabled
+   bool adxCondition = true;
+   if(UseADXFilter) {
+      adxIndicator.Refresh();
+      double adxValue = adxIndicator.Main(0);
+      adxCondition = adxValue >= MinADX && adxValue <= MaxADX;
+   }
+   
    // Check DCA conditions for Buy if allowed
    if(TradeDirection != TRADE_SELL_ONLY && buyPositionCount > 0) {
       // Only DCA if:
       // 1. Position is in loss
-      // 2. Price is below upper band (for mean reversion)
+      // 2. Price is above upper band - min distance (same as normal entry)
       // 3. Price is at least PipsStep away from average price
       // 4. We haven't reached position limit
+      // 5. ADX condition is met (if enabled)
       if(buyTotalProfit < 0 && 
-         currentBid < upperBand && 
+         currentBid > (upperBand - (MinDistanceFromBB * _Point * 10)) && 
          currentBid + PipsStep * _Point <= buyAveragePrice && 
-         buyPositionCount < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
+         buyPositionCount < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2 &&
+         adxCondition) {
          
          int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_BUY);
          if(positionsInCurrentBar == 0) {
@@ -807,13 +817,15 @@ void CheckDCAConditions() {
    if(TradeDirection != TRADE_BUY_ONLY && sellPositionCount > 0) {
       // Only DCA if:
       // 1. Position is in loss
-      // 2. Price is above lower band (for mean reversion)
+      // 2. Price is below lower band + min distance (same as normal entry)
       // 3. Price is at least PipsStep away from average price
       // 4. We haven't reached position limit
+      // 5. ADX condition is met (if enabled)
       if(sellTotalProfit < 0 && 
-         currentAsk > lowerBand && 
+         currentAsk < (lowerBand + (MinDistanceFromBB * _Point * 10)) && 
          currentAsk - PipsStep * _Point >= sellAveragePrice && 
-         sellPositionCount < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
+         sellPositionCount < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2 &&
+         adxCondition) {
          
          int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_SELL);
          if(positionsInCurrentBar == 0) {
