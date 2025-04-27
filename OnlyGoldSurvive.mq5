@@ -50,6 +50,7 @@ input bool     UseBollingerFilter = true;  // Enable Bollinger Bands filter
 input int      BBPeriod = 20;          // Bollinger Bands period
 input double   BBDeviation = 2.0;      // Bollinger Bands deviation
 input ENUM_APPLIED_PRICE BBPrice = PRICE_CLOSE; // Bollinger Bands price type
+input int      MinDistanceFromBB = 10;  // Minimum distance from Bollinger Bands in pips
 
 input group    "=== ADX Filter ==="
 input bool     UseADXFilter = false;     // Enable ADX filter
@@ -72,6 +73,7 @@ input group    "=== Interface Settings ==="
 input bool     Info = true;            // Show information panel
 input int      FontSize = 12;          // Panel font size
 input color    TextColor = clrWhite;   // Panel text color
+input bool     ShowTradeLogs = false;  // Show trade logs
 
 input group    "=== Anti Drawdown Settings ==="
 input bool     UseAntiDrawdown = true;     // Enable anti-drawdown system
@@ -108,23 +110,23 @@ int OnInit() {
    
    // Initialize Bollinger Bands
    if(!bollingerBands.Create(_Symbol, PERIOD_CURRENT, BBPeriod, 0, BBDeviation, BBPrice)) {
-      Print("Error creating Bollinger Bands: ", GetLastError());
+      PrintFormat("Error creating Bollinger Bands: %d", GetLastError());
       return(INIT_FAILED);
    }
    
    // Initialize ADX
    if(UseADXFilter && !adxIndicator.Create(_Symbol, PERIOD_CURRENT, ADXPeriod)) {
-      Print("Error creating ADX indicator: ", GetLastError());
+      PrintFormat("Error creating ADX indicator: %d", GetLastError());
       return(INIT_FAILED);
    }
    
    // Initialize RSI
    if(UseRSIFilter && !rsiIndicator.Create(_Symbol, PERIOD_CURRENT, RSIPeriod, PRICE_CLOSE)) {
-      Print("Error creating RSI indicator: ", GetLastError());
+      PrintFormat("Error creating RSI indicator: %d", GetLastError());
       return(INIT_FAILED);
    }
    
-   Print("EA initialized - Magic: ", Magic);
+   PrintFormat("EA initialized - Magic: %d", Magic);
    return(INIT_SUCCEEDED);
 }
 
@@ -133,7 +135,7 @@ int OnInit() {
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason) {
    ObjectsDeleteAll(0, "EA_Info_");
-   Print("EA deinitialized");
+   PrintFormat("EA deinitialized - Reason: %d", reason);
 }
 
 //+------------------------------------------------------------------+
@@ -163,10 +165,7 @@ void OnTick() {
    int endTimeInMinutes = TimeEndHour * 60 + TimeEndMinute;
    
    if(currentTimeInMinutes < startTimeInMinutes || currentTimeInMinutes >= endTimeInMinutes) {
-      Print("Outside trading hours - GMT: ", gmtHour, ":", brokerMinute, 
-            " (Start GMT: ", TimeStartHour, ":", TimeStartMinute, 
-            ", End GMT: ", TimeEndHour, ":", TimeEndMinute, 
-            ", Broker GMT Offset: ", BrokerGMTOffset, ")");
+      PrintStatusLine();
       return;
    }
    
@@ -174,17 +173,8 @@ void OnTick() {
    double currentSpread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double spreadInPips = currentSpread / (_Point * 10);  // Convert to pips (1 pip = 10 points)
    
-   // Log spread only when it changes significantly or every 30 seconds
-   if(currentTime - lastLogTime >= 30 || MathAbs(spreadInPips - lastSpread) >= 5) {
-      Print("Spread Update: ", NormalizeDouble(spreadInPips, 1), " pips (", 
-            spreadInPips > lastSpread ? "increased" : "decreased", " by ", 
-            NormalizeDouble(MathAbs(spreadInPips - lastSpread), 1), " pips)");
-      lastLogTime = currentTime;
-      lastSpread = spreadInPips;
-   }
-   
    if(spreadInPips > MaxSpread) {
-      Print("Spread too high: ", NormalizeDouble(spreadInPips, 1), " pips > ", MaxSpread, " pips");
+      PrintStatusLine();
       return;
    }
    
@@ -207,23 +197,12 @@ void OnTick() {
       lastOpenTime = currentTime;
       lastBidPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       totalPriceMovement = 0;
-      Print("First tick - Initializing lastOpenTime and lastBidPrice");
    }
    
    // Check price movements for new trades
    double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double priceMovement = MathAbs(currentBid - lastBidPrice) / (_Point * 10);  // Movement in pips
    totalPriceMovement += priceMovement;
-   
-   // Log price movement only when significant or every 30 seconds
-   if(currentTime - lastLogTime >= 30 || MathAbs(totalPriceMovement - lastLoggedMovement) >= 100) {
-      Print("Price Update: Current: ", NormalizeDouble(currentBid, 2), 
-            ", Movement: ", NormalizeDouble(priceMovement, 1), 
-            " pips, Total: ", NormalizeDouble(totalPriceMovement, 1), 
-            " pips, Required: ", PipsStep, " pips");
-      lastLogTime = currentTime;
-      lastLoggedMovement = totalPriceMovement;
-   }
    
    // Update Bollinger Bands
    bollingerBands.Refresh();
@@ -242,11 +221,6 @@ void OnTick() {
    if(UseADXFilter) {
       double adxValue = adxIndicator.Main(0);
       adxCondition = adxValue >= MinADX && adxValue <= MaxADX;
-      
-      if(!adxCondition) {
-         Print("ADX condition not met: ", NormalizeDouble(adxValue, 1), 
-               " (Min: ", MinADX, ", Max: ", MaxADX, ")");
-      }
    }
    
    // Check RSI conditions
@@ -254,42 +228,89 @@ void OnTick() {
    if(UseRSIFilter) {
       double rsiValue = rsiIndicator.Main(0);
       rsiCondition = rsiValue <= RSIOverbought && rsiValue >= RSIOversold;
-      
-      if(!rsiCondition) {
-         Print("RSI condition not met: ", NormalizeDouble(rsiValue, 1), 
-               " (Overbought: ", RSIOverbought, ", Oversold: ", RSIOversold, ")");
-      }
    }
    
    // Check conditions based on chosen direction
    if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
-      if(UseBollingerFilter && currentBid > upperBand) {
-         // Check if we can open Buy positions based on Anti Drawdown
-         if(!UseAntiDrawdown || !IsDirectionInLoss(POSITION_TYPE_BUY)) {
-            canOpenBuy = true;
-            Print("Buy condition met - Price above upper band");
+      if(UseBollingerFilter) {
+         // Calculate upper band minus 10 pips
+         double upperBandMinusPips = upperBand - (MinDistanceFromBB * _Point * 10);
+         
+         // Debug logs for Buy conditions
+         Print("=== DEBUG: Buy Conditions ===");
+         Print("Current Bid: ", currentBid);
+         Print("Upper Band: ", upperBand);
+         Print("Upper Band - MinDistance: ", upperBandMinusPips);
+         Print("Distance from Upper Band: ", (upperBand - currentBid) / _Point / 10, " pips");
+         Print("Should enter Buy: ", currentBid > upperBandMinusPips ? "YES" : "NO");
+         Print("TradeDirection: ", TradeDirection == TRADE_BUY_ONLY ? "BUY_ONLY" : "BOTH");
+         Print("UseBollingerFilter: ", UseBollingerFilter ? "YES" : "NO");
+         Print("ADX Condition: ", adxCondition ? "YES" : "NO");
+         Print("RSI Condition: ", rsiCondition ? "YES" : "NO");
+         Print("Spread Condition: ", spreadInPips <= MaxSpread ? "YES" : "NO");
+         Print("Time Condition: ", currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes < endTimeInMinutes ? "YES" : "NO");
+         Print("AntiDrawdown: ", !UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_BUY) ? "YES" : "NO");
+         
+         // Check if price is above (upper band - 10 pips)
+         if(currentBid > upperBandMinusPips) {
+            // Check if we should stop trading Buy based on Anti Drawdown
+            if(!UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_BUY)) {
+               canOpenBuy = true;
+               Print("=== ENTRY BUY TRIGGERED ===");
+               Print("Reason: Price above upper band - min distance");
+            }
          }
       }
    }
    
    if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
-      if(UseBollingerFilter && currentBid < lowerBand) {
-         // Check if we can open Sell positions based on Anti Drawdown
-         if(!UseAntiDrawdown || !IsDirectionInLoss(POSITION_TYPE_SELL)) {
-            canOpenSell = true;
-            Print("Sell condition met - Price below lower band");
+      if(UseBollingerFilter) {
+         // Calculate lower band plus 10 pips
+         double lowerBandPlusPips = lowerBand + (MinDistanceFromBB * _Point * 10);
+         
+         // Debug logs for Sell conditions
+         Print("=== DEBUG: Sell Conditions ===");
+         Print("Current Bid: ", currentBid);
+         Print("Lower Band: ", lowerBand);
+         Print("Lower Band + MinDistance: ", lowerBandPlusPips);
+         Print("Distance from Lower Band: ", (currentBid - lowerBand) / _Point / 10, " pips");
+         Print("Should enter Sell: ", currentBid < lowerBandPlusPips ? "YES" : "NO");
+         Print("TradeDirection: ", TradeDirection == TRADE_SELL_ONLY ? "SELL_ONLY" : "BOTH");
+         Print("UseBollingerFilter: ", UseBollingerFilter ? "YES" : "NO");
+         Print("ADX Condition: ", adxCondition ? "YES" : "NO");
+         Print("RSI Condition: ", rsiCondition ? "YES" : "NO");
+         Print("Spread Condition: ", spreadInPips <= MaxSpread ? "YES" : "NO");
+         Print("Time Condition: ", currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes < endTimeInMinutes ? "YES" : "NO");
+         Print("AntiDrawdown: ", !UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_SELL) ? "YES" : "NO");
+         
+         // Check if price is below (lower band + 10 pips)
+         if(currentBid < lowerBandPlusPips) {
+            // Check if we should stop trading Sell based on Anti Drawdown
+            if(!UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_SELL)) {
+               canOpenSell = true;
+               Print("=== ENTRY SELL TRIGGERED ===");
+               Print("Reason: Price below lower band + min distance");
+            }
          }
       }
    }
    
    // Open new trades if conditions are met
    if(canOpenBuy) {
+      Print("=== OPENING BUY ORDER ===");
+      Print("Current Bid: ", currentBid);
+      Print("Upper Band: ", upperBand);
+      Print("Upper Band - MinDistance: ", upperBand - (MinDistanceFromBB * _Point * 10));
       OpenBuyOrder();
       lastBidPrice = currentBid;  // Update lastBidPrice only after a trade
       totalPriceMovement = 0;     // Reset total movement
       lastOpenTime = currentTime; // Update last trade time
    }
    if(canOpenSell) {
+      Print("=== OPENING SELL ORDER ===");
+      Print("Current Bid: ", currentBid);
+      Print("Lower Band: ", lowerBand);
+      Print("Lower Band + MinDistance: ", lowerBand + (MinDistanceFromBB * _Point * 10));
       OpenSellOrder();
       lastBidPrice = currentBid;  // Update lastBidPrice only after a trade
       totalPriceMovement = 0;     // Reset total movement
@@ -301,14 +322,11 @@ void OnTick() {
    
    // Check DCA conditions only for allowed directions
    CheckDCAConditions();
-   
-   // Check total drawdown
-   if(UseAntiDrawdown) {
-      double totalProfit = CalculateTotalProfit();
-      if(totalProfit <= -MaxDrawdown) {
-         Print("Maximum drawdown reached: ", totalProfit, " ", AccountInfoString(ACCOUNT_CURRENCY), " <= ", -MaxDrawdown, " ", AccountInfoString(ACCOUNT_CURRENCY));
-         CloseAllPositions();
-      }
+
+   // Print status line every second
+   if(currentTime - lastLogTime >= 1) {
+      PrintStatusLine();
+      lastLogTime = currentTime;
    }
 }
 
@@ -322,7 +340,6 @@ void OpenBuyOrder() {
    // Check minimum delay
    datetime currentTime = TimeCurrent();
    if(UseMinTime && currentTime - lastBuyPositionTime < OpenTime) {
-      Print("Minimum delay not met for Buy: ", currentTime - lastBuyPositionTime, " seconds < ", OpenTime, " seconds");
       return;
    }
    
@@ -330,7 +347,6 @@ void OpenBuyOrder() {
    
    // Check if we've reached the maximum number of Buy positions
    if(totalBuyPositions >= MaxBuyPositions) {
-      Print("Maximum Buy positions reached: ", totalBuyPositions, " >= ", MaxBuyPositions);
       return;
    }
    
@@ -352,12 +368,32 @@ void OpenBuyOrder() {
          
          // Check minimum distance from last position
          if(CheckMinimumDistance(POSITION_TYPE_BUY, MinDistancePips)) {
-            if(!trade.Buy(calculatedLots, _Symbol, 0, 0, 0, expertName)) {
-               Print("Buy order failed. Error: ", GetLastError());
+            // Get current price and check if we already have a position at this level
+            double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            bool hasPositionAtLevel = false;
+            
+            for(int i = PositionsTotal() - 1; i >= 0; i--) {
+               if(PositionSelectByTicket(PositionGetTicket(i))) {
+                  if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+                     PositionGetString(POSITION_SYMBOL) == _Symbol &&
+                     PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+                     
+                     double positionPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+                     double priceDiff = MathAbs(currentBid - positionPrice) / _Point;
+                     
+                     if(priceDiff < 10) { // Less than 1 pip difference
+                        hasPositionAtLevel = true;
+                        break;
+                     }
+                  }
+               }
             }
-            else {
-               Print("Buy order placed successfully with lots: ", calculatedLots);
-               lastBuyPositionTime = currentTime; // Update time of last Buy position
+            
+            if(!hasPositionAtLevel) {
+               if(trade.Buy(calculatedLots, _Symbol, 0, 0, 0, expertName)) {
+                  lastBuyPositionTime = currentTime; // Update time of last Buy position
+                  PrintFormat("BUY order opened - Price: %.5f, Lots: %.2f", currentBid, calculatedLots);
+               }
             }
          }
       }
@@ -374,7 +410,6 @@ void OpenSellOrder() {
    // Check minimum delay
    datetime currentTime = TimeCurrent();
    if(UseMinTime && currentTime - lastSellPositionTime < OpenTime) {
-      Print("Minimum delay not met for Sell: ", currentTime - lastSellPositionTime, " seconds < ", OpenTime, " seconds");
       return;
    }
    
@@ -382,7 +417,6 @@ void OpenSellOrder() {
    
    // Check if we've reached the maximum number of Sell positions
    if(totalSellPositions >= MaxSellPositions) {
-      Print("Maximum Sell positions reached: ", totalSellPositions, " >= ", MaxSellPositions);
       return;
    }
    
@@ -404,12 +438,32 @@ void OpenSellOrder() {
          
          // Check minimum distance from last position
          if(CheckMinimumDistance(POSITION_TYPE_SELL, MinDistancePips)) {
-            if(!trade.Sell(calculatedLots, _Symbol, 0, 0, 0, expertName)) {
-               Print("Sell order failed. Error: ", GetLastError());
+            // Get current price and check if we already have a position at this level
+            double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            bool hasPositionAtLevel = false;
+            
+            for(int i = PositionsTotal() - 1; i >= 0; i--) {
+               if(PositionSelectByTicket(PositionGetTicket(i))) {
+                  if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+                     PositionGetString(POSITION_SYMBOL) == _Symbol &&
+                     PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
+                     
+                     double positionPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+                     double priceDiff = MathAbs(currentAsk - positionPrice) / _Point;
+                     
+                     if(priceDiff < 10) { // Less than 1 pip difference
+                        hasPositionAtLevel = true;
+                        break;
+                     }
+                  }
+               }
             }
-            else {
-               Print("Sell order placed successfully with lots: ", calculatedLots);
-               lastSellPositionTime = currentTime; // Update time of last Sell position
+            
+            if(!hasPositionAtLevel) {
+               if(trade.Sell(calculatedLots, _Symbol, 0, 0, 0, expertName)) {
+                  lastSellPositionTime = currentTime; // Update time of last Sell position
+                  PrintFormat("SELL order opened - Price: %.5f, Lots: %.2f", currentAsk, calculatedLots);
+               }
             }
          }
       }
@@ -534,14 +588,31 @@ void UpdateTrailingStops() {
    if(buyPositionCount > 0) buyAveragePrice /= buyTotalLots;
    if(sellPositionCount > 0) sellAveragePrice /= sellTotalLots;
    
-   // Manage profits and trailing stops
+   // Check if we have both positions and total profit is greater than 10
+   bool hasBothPositions = buyPositionCount > 0 && sellPositionCount > 0;
+   double totalProfit = buyTotalProfit + sellTotalProfit;
+   bool shouldStopProfits = hasBothPositions && totalProfit >= 10.0;
+   
+   // If we have both positions and total profit is greater than 10, close all positions
+   if(shouldStopProfits) {
+      if(ShowTradeLogs) PrintFormat("Closing all positions - Total profit: %.2f >= 10.0", totalProfit);
+      CloseAllPositions();
+      return;
+   }
+   
+   // If we have both positions, don't use TP or Trailing
+   if(hasBothPositions) {
+      return;
+   }
+   
+   // Manage profits and trailing stops only if we don't have both positions
    if(buyPositionCount > 0) {
       double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double buyProfitInPoints = (currentBid - buyAveragePrice) / _Point;
       
       // Check if Buy group has reached take profit
       if(buyProfitInPoints >= TakeProfit) {
-         Print("Closing all Buy positions - Total profit in points: ", buyProfitInPoints);
+         if(ShowTradeLogs) PrintFormat("Closing all Buy positions - Total profit in points: %.2f", buyProfitInPoints);
          ClosePositionsInDirection(POSITION_TYPE_BUY);
       } else {
          // Update trailing stops for all Buy positions
@@ -553,19 +624,33 @@ void UpdateTrailingStops() {
                      PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
                      
                      double currentSL = PositionGetDouble(POSITION_SL);
+                     double newSL = 0;
                      
                      if(currentSL < buyAveragePrice || currentSL == 0) {
                         if(currentBid - (Tral + TralStart) * _Point >= buyAveragePrice) {
-                           trade.PositionModify(PositionGetTicket(i),
-                                              buyAveragePrice + TralStart * _Point,
-                                              PositionGetDouble(POSITION_TP));
+                           newSL = buyAveragePrice + TralStart * _Point;
                         }
                      }
                      else if(currentSL >= buyAveragePrice) {
                         if(currentBid - Tral * _Point > currentSL) {
-                           trade.PositionModify(PositionGetTicket(i),
-                                              currentBid - Tral * _Point,
-                                              PositionGetDouble(POSITION_TP));
+                           newSL = currentBid - Tral * _Point;
+                        }
+                     }
+                     
+                     // Only modify if we have a valid new stop loss
+                     if(newSL > 0) {
+                        // Get symbol properties for stop level
+                        double stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+                        double minStop = currentBid - stopLevel;
+                        
+                        // Ensure stop loss is not too close to current price
+                        if(newSL < minStop) {
+                           newSL = minStop;
+                        }
+                        
+                        // Only modify if the new stop loss is different from current
+                        if(MathAbs(newSL - currentSL) > _Point) {
+                           trade.PositionModify(PositionGetTicket(i), newSL, PositionGetDouble(POSITION_TP));
                         }
                      }
                   }
@@ -581,7 +666,7 @@ void UpdateTrailingStops() {
       
       // Check if Sell group has reached take profit
       if(sellProfitInPoints >= TakeProfit) {
-         Print("Closing all Sell positions - Total profit in points: ", sellProfitInPoints);
+         if(ShowTradeLogs) PrintFormat("Closing all Sell positions - Total profit in points: %.2f", sellProfitInPoints);
          ClosePositionsInDirection(POSITION_TYPE_SELL);
       } else {
          // Update trailing stops for all Sell positions
@@ -593,19 +678,33 @@ void UpdateTrailingStops() {
                      PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
                      
                      double currentSL = PositionGetDouble(POSITION_SL);
+                     double newSL = 0;
                      
                      if(currentSL > sellAveragePrice || currentSL == 0) {
                         if(currentAsk + (Tral + TralStart) * _Point <= sellAveragePrice) {
-                           trade.PositionModify(PositionGetTicket(i),
-                                              sellAveragePrice - TralStart * _Point,
-                                              PositionGetDouble(POSITION_TP));
+                           newSL = sellAveragePrice - TralStart * _Point;
                         }
                      }
                      else if(currentSL <= sellAveragePrice) {
                         if(currentAsk + Tral * _Point < currentSL) {
-                           trade.PositionModify(PositionGetTicket(i),
-                                              currentAsk + Tral * _Point,
-                                              PositionGetDouble(POSITION_TP));
+                           newSL = currentAsk + Tral * _Point;
+                        }
+                     }
+                     
+                     // Only modify if we have a valid new stop loss
+                     if(newSL > 0) {
+                        // Get symbol properties for stop level
+                        double stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+                        double maxStop = currentAsk + stopLevel;
+                        
+                        // Ensure stop loss is not too close to current price
+                        if(newSL > maxStop) {
+                           newSL = maxStop;
+                        }
+                        
+                        // Only modify if the new stop loss is different from current
+                        if(MathAbs(newSL - currentSL) > _Point) {
+                           trade.PositionModify(PositionGetTicket(i), newSL, PositionGetDouble(POSITION_TP));
                         }
                      }
                   }
@@ -639,13 +738,15 @@ void CheckDCAConditions() {
    double buyAveragePrice = 0;
    double buyTotalLots = 0;
    int buyPositionCount = 0;
+   double buyTotalProfit = 0;
    
    // Variables for Sell
    double sellAveragePrice = 0;
    double sellTotalLots = 0;
    int sellPositionCount = 0;
+   double sellTotalProfit = 0;
    
-   // Calculate averages for Buy and Sell separately
+   // Calculate averages and profits for Buy and Sell separately
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       if(PositionSelectByTicket(PositionGetTicket(i))) {
          if(PositionGetInteger(POSITION_MAGIC) == Magic && 
@@ -653,16 +754,19 @@ void CheckDCAConditions() {
             
             double positionLots = PositionGetDouble(POSITION_VOLUME);
             double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            double positionProfit = PositionGetDouble(POSITION_PROFIT);
             
             if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
                buyAveragePrice += openPrice * positionLots;
                buyTotalLots += positionLots;
                buyPositionCount++;
+               buyTotalProfit += positionProfit;
             }
             else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
                sellAveragePrice += openPrice * positionLots;
                sellTotalLots += positionLots;
                sellPositionCount++;
+               sellTotalProfit += positionProfit;
             }
          }
       }
@@ -675,14 +779,25 @@ void CheckDCAConditions() {
    double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    
+   // Update Bollinger Bands
+   bollingerBands.Refresh();
+   double upperBand = bollingerBands.Upper(0);
+   double lowerBand = bollingerBands.Lower(0);
+   
    // Check DCA conditions for Buy if allowed
    if(TradeDirection != TRADE_SELL_ONLY && buyPositionCount > 0) {
-      if(currentBid + PipsStep * _Point <= buyAveragePrice && 
+      // Only DCA if:
+      // 1. Position is in loss
+      // 2. Price is below upper band (for mean reversion)
+      // 3. Price is at least PipsStep away from average price
+      // 4. We haven't reached position limit
+      if(buyTotalProfit < 0 && 
+         currentBid < upperBand && 
+         currentBid + PipsStep * _Point <= buyAveragePrice && 
          buyPositionCount < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
          
          int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_BUY);
          if(positionsInCurrentBar == 0) {
-            Print("DCA Buy condition met - Price dropped below average by ", PipsStep, " pips");
             OpenBuyOrder();
          }
       }
@@ -690,12 +805,18 @@ void CheckDCAConditions() {
    
    // Check DCA conditions for Sell if allowed
    if(TradeDirection != TRADE_BUY_ONLY && sellPositionCount > 0) {
-      if(currentAsk - PipsStep * _Point >= sellAveragePrice && 
+      // Only DCA if:
+      // 1. Position is in loss
+      // 2. Price is above lower band (for mean reversion)
+      // 3. Price is at least PipsStep away from average price
+      // 4. We haven't reached position limit
+      if(sellTotalProfit < 0 && 
+         currentAsk > lowerBand && 
+         currentAsk - PipsStep * _Point >= sellAveragePrice && 
          sellPositionCount < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
          
          int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_SELL);
          if(positionsInCurrentBar == 0) {
-            Print("DCA Sell condition met - Price rose above average by ", PipsStep, " pips");
             OpenSellOrder();
          }
       }
@@ -883,7 +1004,7 @@ void CreateLabel(string name, string text, int x, int y, color clr) {
    }
    
    if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0)) {
-      Print("Error creating label: ", GetLastError());
+      PrintFormat("Error creating label: %d", GetLastError());
       return;
    }
    
@@ -940,7 +1061,43 @@ double CalculateTotalProfit() {
 }
 
 //+------------------------------------------------------------------+
-//| Close all positions                                                |
+//| Check if we have both Buy and Sell positions open                 |
+//+------------------------------------------------------------------+
+bool HasBothPositionsOpen() {
+   int buyCount = CountPositions(POSITION_TYPE_BUY);
+   int sellCount = CountPositions(POSITION_TYPE_SELL);
+   return buyCount > 0 && sellCount > 0;
+}
+
+//+------------------------------------------------------------------+
+//| Check if we should stop trading in a direction                    |
+//+------------------------------------------------------------------+
+bool ShouldStopTradingDirection(ENUM_POSITION_TYPE positionType) {
+   if(!HasBothPositionsOpen()) return false;
+   
+   // Calculate total profit
+   double totalProfit = 0;
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol) {
+            totalProfit += PositionGetDouble(POSITION_PROFIT);
+         }
+      }
+   }
+   
+   // If total profit is greater than or equal to 10, close all positions
+   if(totalProfit >= 10.0) {
+      CloseAllPositions();
+      return true;
+   }
+   
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Close All Positions                                               |
 //+------------------------------------------------------------------+
 void CloseAllPositions() {
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
@@ -951,4 +1108,70 @@ void CloseAllPositions() {
          }
       }
    }
+}
+
+//+------------------------------------------------------------------+
+//| Print Status Line                                                  |
+//+------------------------------------------------------------------+
+void PrintStatusLine() {
+   // Get current prices and bands
+   double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double spread = (currentAsk - currentBid) / _Point / 10;  // Convert to pips
+   
+   // Get Bollinger Bands
+   bollingerBands.Refresh();
+   double upperBand = bollingerBands.Upper(0);
+   double lowerBand = bollingerBands.Lower(0);
+   
+   // Calculate trading lines
+   double buyLine = upperBand - (MinDistanceFromBB * _Point * 10);
+   double sellLine = lowerBand + (MinDistanceFromBB * _Point * 10);
+   
+   // Get positions info
+   int buyPositions = CountPositions(POSITION_TYPE_BUY);
+   int sellPositions = CountPositions(POSITION_TYPE_SELL);
+   double buyProfit = 0;
+   double sellProfit = 0;
+   double buyLots = 0;
+   double sellLots = 0;
+   
+   // Calculate profits and lots
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol) {
+            double positionLots = PositionGetDouble(POSITION_VOLUME);
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+               buyProfit += PositionGetDouble(POSITION_PROFIT);
+               buyLots += positionLots;
+            }
+            else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
+               sellProfit += PositionGetDouble(POSITION_PROFIT);
+               sellLots += positionLots;
+            }
+         }
+      }
+   }
+   
+   // Get ADX value if enabled
+   double adxValue = 0;
+   if(UseADXFilter) {
+      adxIndicator.Refresh();
+      adxValue = adxIndicator.Main(0);
+   }
+   
+   // Get RSI value if enabled
+   double rsiValue = 0;
+   if(UseRSIFilter) {
+      rsiIndicator.Refresh();
+      rsiValue = rsiIndicator.Main(0);
+   }
+   
+   // Print single line with all important info
+   PrintFormat("Bid: %.5f | BuyLine: %.5f | SellLine: %.5f | Buy: %d(%.2f/%.2f) | Sell: %d(%.2f/%.2f) | Spread: %.1f | ADX: %.1f | RSI: %.1f",
+         currentBid, buyLine, sellLine, 
+         buyPositions, buyProfit, buyLots,
+         sellPositions, sellProfit, sellLots,
+         spread, adxValue, rsiValue);
 } 
