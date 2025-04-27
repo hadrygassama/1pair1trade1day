@@ -27,6 +27,7 @@ input group    "=== Position Sizing ==="
 input double   Lots = 0.1;             // Base lot size
 input double   LotMultiplier = 1.5;    // Lot size multiplier
 input double   MaxLot = 1.0;           // Maximum lot size
+input bool     EnableMaxPosition = true;     // Enable position limits
 input int      MaxBuyPositions = 30;    // Maximum Buy positions
 input int      MaxSellPositions = 30;   // Maximum Sell positions
 
@@ -80,6 +81,7 @@ input bool     UseAntiDrawdown = true;     // Enable anti-drawdown
 input bool     UseWeightedLotProfit = true; // Use weighted lot profit
 input double   MinTotalProfitToAvoidDD = 50.0;         // Min profit in currency
 input double   MinProfitPerWeightedLot = 10.0;         // Min profit per lot
+input double   MaxDirectionDrawdown = 3.0;             // Max drawdown per direction (%)
 
 // Global variables
 CTrade trade;
@@ -238,28 +240,11 @@ void OnTick() {
          // Calculate upper band minus 10 pips
          double upperBandMinusPips = upperBand - (MinDistanceFromBB * _Point * 10);
          
-         // Debug logs for Buy conditions
-         Print("=== DEBUG: Buy Conditions ===");
-         Print("Current Bid: ", currentBid);
-         Print("Upper Band: ", upperBand);
-         Print("Upper Band - MinDistance: ", upperBandMinusPips);
-         Print("Distance from Upper Band: ", (upperBand - currentBid) / _Point / 10, " pips");
-         Print("Should enter Buy: ", currentBid > upperBandMinusPips ? "YES" : "NO");
-         Print("TradeDirection: ", TradeDirection == TRADE_BUY_ONLY ? "BUY_ONLY" : "BOTH");
-         Print("UseBollingerFilter: ", UseBollingerFilter ? "YES" : "NO");
-         Print("ADX Condition: ", adxCondition ? "YES" : "NO");
-         Print("RSI Condition: ", rsiCondition ? "YES" : "NO");
-         Print("Spread Condition: ", spreadInPips <= MaxSpread ? "YES" : "NO");
-         Print("Time Condition: ", currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes < endTimeInMinutes ? "YES" : "NO");
-         Print("AntiDrawdown: ", !UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_BUY) ? "YES" : "NO");
-         
          // Check if price is above (upper band - 10 pips)
          if(currentBid > upperBandMinusPips) {
             // Check if we should stop trading Buy based on Anti Drawdown
             if(!UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_BUY)) {
                canOpenBuy = true;
-               Print("=== ENTRY BUY TRIGGERED ===");
-               Print("Reason: Price above upper band - min distance");
             }
          }
       }
@@ -270,28 +255,11 @@ void OnTick() {
          // Calculate lower band plus 10 pips
          double lowerBandPlusPips = lowerBand + (MinDistanceFromBB * _Point * 10);
          
-         // Debug logs for Sell conditions
-         Print("=== DEBUG: Sell Conditions ===");
-         Print("Current Bid: ", currentBid);
-         Print("Lower Band: ", lowerBand);
-         Print("Lower Band + MinDistance: ", lowerBandPlusPips);
-         Print("Distance from Lower Band: ", (currentBid - lowerBand) / _Point / 10, " pips");
-         Print("Should enter Sell: ", currentBid < lowerBandPlusPips ? "YES" : "NO");
-         Print("TradeDirection: ", TradeDirection == TRADE_SELL_ONLY ? "SELL_ONLY" : "BOTH");
-         Print("UseBollingerFilter: ", UseBollingerFilter ? "YES" : "NO");
-         Print("ADX Condition: ", adxCondition ? "YES" : "NO");
-         Print("RSI Condition: ", rsiCondition ? "YES" : "NO");
-         Print("Spread Condition: ", spreadInPips <= MaxSpread ? "YES" : "NO");
-         Print("Time Condition: ", currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes < endTimeInMinutes ? "YES" : "NO");
-         Print("AntiDrawdown: ", !UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_SELL) ? "YES" : "NO");
-         
          // Check if price is below (lower band + 10 pips)
          if(currentBid < lowerBandPlusPips) {
             // Check if we should stop trading Sell based on Anti Drawdown
             if(!UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_SELL)) {
                canOpenSell = true;
-               Print("=== ENTRY SELL TRIGGERED ===");
-               Print("Reason: Price below lower band + min distance");
             }
          }
       }
@@ -299,20 +267,12 @@ void OnTick() {
    
    // Open new trades if conditions are met
    if(canOpenBuy) {
-      Print("=== OPENING BUY ORDER ===");
-      Print("Current Bid: ", currentBid);
-      Print("Upper Band: ", upperBand);
-      Print("Upper Band - MinDistance: ", upperBand - (MinDistanceFromBB * _Point * 10));
       OpenBuyOrder();
       lastBidPrice = currentBid;  // Update lastBidPrice only after a trade
       totalPriceMovement = 0;     // Reset total movement
       lastOpenTime = currentTime; // Update last trade time
    }
    if(canOpenSell) {
-      Print("=== OPENING SELL ORDER ===");
-      Print("Current Bid: ", currentBid);
-      Print("Lower Band: ", lowerBand);
-      Print("Lower Band + MinDistance: ", lowerBand + (MinDistanceFromBB * _Point * 10));
       OpenSellOrder();
       lastBidPrice = currentBid;  // Update lastBidPrice only after a trade
       totalPriceMovement = 0;     // Reset total movement
@@ -346,56 +306,56 @@ void OpenBuyOrder() {
    }
    
    int totalBuyPositions = CountPositions(POSITION_TYPE_BUY);
+   int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_BUY);
    
-   // Check if we've reached the maximum number of Buy positions
-   if(totalBuyPositions >= MaxBuyPositions) {
+   // Check position limit if enabled
+   if(EnableMaxPosition && totalBuyPositions >= MaxBuyPositions) {
       return;
    }
    
-   if(totalBuyPositions < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
-      int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_BUY);
+   if(positionsInCurrentBar == 0) {
+      // Get symbol properties
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
       
-      if(positionsInCurrentBar == 0) {
-         // Get symbol properties
-         double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-         double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      // Calculate lot size with multiplier
+      double calculatedLots = Lots * MathPow(LotMultiplier, totalBuyPositions);
+      calculatedLots = MathMin(calculatedLots, MaxLot); // Ensure we don't exceed MaxLot
+      
+      // Round to the nearest valid lot size
+      calculatedLots = MathFloor(calculatedLots / lotStep) * lotStep;
+      calculatedLots = MathMax(calculatedLots, minLot); // Ensure we don't go below minimum
+      
+      // Check minimum distance from last position
+      if(CheckMinimumDistance(POSITION_TYPE_BUY, MinDistancePips)) {
+         // Get current price and check if we already have a position at this level
+         double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         bool hasPositionAtLevel = false;
          
-         // Calculate lot size with multiplier
-         double calculatedLots = Lots * MathPow(LotMultiplier, totalBuyPositions);
-         calculatedLots = MathMin(calculatedLots, MaxLot); // Ensure we don't exceed MaxLot
-         
-         // Round to the nearest valid lot size
-         calculatedLots = MathFloor(calculatedLots / lotStep) * lotStep;
-         calculatedLots = MathMax(calculatedLots, minLot); // Ensure we don't go below minimum
-         
-         // Check minimum distance from last position
-         if(CheckMinimumDistance(POSITION_TYPE_BUY, MinDistancePips)) {
-            // Get current price and check if we already have a position at this level
-            double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            bool hasPositionAtLevel = false;
-            
-            for(int i = PositionsTotal() - 1; i >= 0; i--) {
-               if(PositionSelectByTicket(PositionGetTicket(i))) {
-                  if(PositionGetInteger(POSITION_MAGIC) == Magic && 
-                     PositionGetString(POSITION_SYMBOL) == _Symbol &&
-                     PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
-                     
-                     double positionPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-                     double priceDiff = MathAbs(currentBid - positionPrice) / _Point;
-                     
-                     if(priceDiff < 10) { // Less than 1 pip difference
-                        hasPositionAtLevel = true;
-                        break;
-                     }
+         for(int i = PositionsTotal() - 1; i >= 0; i--) {
+            if(PositionSelectByTicket(PositionGetTicket(i))) {
+               if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+                  PositionGetString(POSITION_SYMBOL) == _Symbol &&
+                  PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+                  
+                  double positionPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+                  double priceDiff = MathAbs(currentBid - positionPrice) / _Point;
+                  
+                  if(priceDiff < 10) { // Less than 1 pip difference
+                     hasPositionAtLevel = true;
+                     break;
                   }
                }
             }
-            
-            if(!hasPositionAtLevel) {
-               if(trade.Buy(calculatedLots, _Symbol, 0, 0, 0, expertName)) {
-                  lastBuyPositionTime = currentTime; // Update time of last Buy position
-                  PrintFormat("BUY order opened - Price: %.5f, Lots: %.2f", currentBid, calculatedLots);
-               }
+         }
+         
+         if(!hasPositionAtLevel) {
+            string comment = expertName;
+            if(UseAntiDrawdown && IsDirectionInLoss(POSITION_TYPE_BUY)) {
+               comment += " [ANTI DD]";
+            }
+            if(trade.Buy(calculatedLots, _Symbol, 0, 0, 0, comment)) {
+               lastBuyPositionTime = currentTime; // Update time of last Buy position
             }
          }
       }
@@ -416,56 +376,56 @@ void OpenSellOrder() {
    }
    
    int totalSellPositions = CountPositions(POSITION_TYPE_SELL);
+   int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_SELL);
    
-   // Check if we've reached the maximum number of Sell positions
-   if(totalSellPositions >= MaxSellPositions) {
+   // Check position limit if enabled
+   if(EnableMaxPosition && totalSellPositions >= MaxSellPositions) {
       return;
    }
    
-   if(totalSellPositions < AccountInfoInteger(ACCOUNT_LIMIT_ORDERS) / 2) {
-      int positionsInCurrentBar = CountPositionsInCurrentBar(POSITION_TYPE_SELL);
+   if(positionsInCurrentBar == 0) {
+      // Get symbol properties
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
       
-      if(positionsInCurrentBar == 0) {
-         // Get symbol properties
-         double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-         double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      // Calculate lot size with multiplier
+      double calculatedLots = Lots * MathPow(LotMultiplier, totalSellPositions);
+      calculatedLots = MathMin(calculatedLots, MaxLot); // Ensure we don't exceed MaxLot
+      
+      // Round to the nearest valid lot size
+      calculatedLots = MathFloor(calculatedLots / lotStep) * lotStep;
+      calculatedLots = MathMax(calculatedLots, minLot); // Ensure we don't go below minimum
+      
+      // Check minimum distance from last position
+      if(CheckMinimumDistance(POSITION_TYPE_SELL, MinDistancePips)) {
+         // Get current price and check if we already have a position at this level
+         double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         bool hasPositionAtLevel = false;
          
-         // Calculate lot size with multiplier
-         double calculatedLots = Lots * MathPow(LotMultiplier, totalSellPositions);
-         calculatedLots = MathMin(calculatedLots, MaxLot); // Ensure we don't exceed MaxLot
-         
-         // Round to the nearest valid lot size
-         calculatedLots = MathFloor(calculatedLots / lotStep) * lotStep;
-         calculatedLots = MathMax(calculatedLots, minLot); // Ensure we don't go below minimum
-         
-         // Check minimum distance from last position
-         if(CheckMinimumDistance(POSITION_TYPE_SELL, MinDistancePips)) {
-            // Get current price and check if we already have a position at this level
-            double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-            bool hasPositionAtLevel = false;
-            
-            for(int i = PositionsTotal() - 1; i >= 0; i--) {
-               if(PositionSelectByTicket(PositionGetTicket(i))) {
-                  if(PositionGetInteger(POSITION_MAGIC) == Magic && 
-                     PositionGetString(POSITION_SYMBOL) == _Symbol &&
-                     PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
-                     
-                     double positionPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-                     double priceDiff = MathAbs(currentAsk - positionPrice) / _Point;
-                     
-                     if(priceDiff < 10) { // Less than 1 pip difference
-                        hasPositionAtLevel = true;
-                        break;
-                     }
+         for(int i = PositionsTotal() - 1; i >= 0; i--) {
+            if(PositionSelectByTicket(PositionGetTicket(i))) {
+               if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+                  PositionGetString(POSITION_SYMBOL) == _Symbol &&
+                  PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
+                  
+                  double positionPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+                  double priceDiff = MathAbs(currentAsk - positionPrice) / _Point;
+                  
+                  if(priceDiff < 10) { // Less than 1 pip difference
+                     hasPositionAtLevel = true;
+                     break;
                   }
                }
             }
-            
-            if(!hasPositionAtLevel) {
-               if(trade.Sell(calculatedLots, _Symbol, 0, 0, 0, expertName)) {
-                  lastSellPositionTime = currentTime; // Update time of last Sell position
-                  PrintFormat("SELL order opened - Price: %.5f, Lots: %.2f", currentAsk, calculatedLots);
-               }
+         }
+         
+         if(!hasPositionAtLevel) {
+            string comment = expertName;
+            if(UseAntiDrawdown && IsDirectionInLoss(POSITION_TYPE_SELL)) {
+               comment += " [ANTI DD]";
+            }
+            if(trade.Sell(calculatedLots, _Symbol, 0, 0, 0, comment)) {
+               lastSellPositionTime = currentTime; // Update time of last Sell position
             }
          }
       }
@@ -1116,6 +1076,8 @@ bool ShouldStopTradingDirection(ENUM_POSITION_TYPE positionType) {
    double totalProfit = 0;
    double totalLots = 0;
    double weightedProfit = 0;
+   double directionProfit = 0;
+   double directionLots = 0;
    
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       if(PositionSelectByTicket(PositionGetTicket(i))) {
@@ -1126,12 +1088,29 @@ bool ShouldStopTradingDirection(ENUM_POSITION_TYPE positionType) {
             totalProfit += positionProfit;
             totalLots += positionLots;
             weightedProfit += positionProfit / positionLots;
+            
+            // Calculate profit for the specific direction
+            if(PositionGetInteger(POSITION_TYPE) == positionType) {
+               directionProfit += positionProfit;
+               directionLots += positionLots;
+            }
          }
       }
    }
    
    // Calculate average profit per weighted lot
    double avgProfitPerLot = totalLots > 0 ? weightedProfit / totalLots : 0;
+   
+   // Calculate drawdown for the specific direction
+   double directionDD = 0;
+   if(directionProfit < 0) {
+      directionDD = MathAbs(directionProfit) / initialBalance * 100;
+   }
+   
+   // Check if drawdown exceeds configured threshold
+   if(directionDD > MaxDirectionDrawdown) {
+      return true;
+   }
    
    // Check conditions based on selected method
    if(UseWeightedLotProfit) {
