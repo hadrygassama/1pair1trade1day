@@ -20,59 +20,62 @@ enum ENUM_TRADE_DIRECTION {
 
 // Expert parameters
 input group    "=== Trading Direction ==="
-input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Direction
-input int      Magic = 123456;         // EA ID
+input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Trading direction
+input int      Magic = 123456;         // Expert Advisor ID
 
 input group    "=== Position Sizing ==="
 input double   Lots = 0.1;             // Base lot size
-input double   LotMultiplier = 1.5;    // Lot multiplier
-input double   MaxLot = 1.0;           // Max lot size
+input double   LotMultiplier = 1.5;    // Lot size multiplier
+input double   MaxLot = 1.0;           // Maximum lot size
 input int      MaxBuyPositions = 30;    // Maximum Buy positions
 input int      MaxSellPositions = 30;   // Maximum Sell positions
 
 input group    "=== Entry Conditions ==="
-input bool     UseMinDistance = false;  // Min distance check
-input int      MinDistancePips = 30;   // Min distance (pips)
-input bool     UseMinTime = false;      // Min time check
-input int      OpenTime = 60;          // Min time (seconds)
-input int      PipsStep = 20;          // Price movement (pips)
-input int      MaxSpread = 50;         // Max spread (pips)
+input bool     UseMinDistance = false;  // Minimum distance check
+input int      MinDistancePips = 30;   // Minimum distance in pips
+input bool     UseMinTime = false;      // Minimum time check
+input int      OpenTime = 60;          // Minimum time in seconds
+input int      PipsStep = 20;          // Price step in pips
+input int      MaxSpread = 50;         // Maximum spread in pips
 
 input group    "=== Trading Hours ==="
-input int      BrokerGMTOffset = 3;    // GMT offset
-input int      TimeStartHour = 0;      // Start hour (GMT)
-input int      TimeStartMinute = 0;    // Start minute
-input int      TimeEndHour = 23;       // End hour (GMT)
-input int      TimeEndMinute = 59;     // End minute
+input int      BrokerGMTOffset = 3;    // Broker GMT offset
+input int      TimeStartHour = 0;      // Trading start hour (GMT)
+input int      TimeStartMinute = 0;    // Trading start minute
+input int      TimeEndHour = 23;       // Trading end hour (GMT)
+input int      TimeEndMinute = 59;     // Trading end minute
 
 input group    "=== Bollinger Bands Filter ==="
-input bool     UseBollingerFilter = true;  // BB filter
-input bool     AllowBollingerContinuation = true;  // Inside bands trading
-input int      BBPeriod = 20;          // BB period
-input double   BBDeviation = 2.0;      // BB deviation
-input ENUM_APPLIED_PRICE BBPrice = PRICE_CLOSE; // BB price type
+input bool     UseBollingerFilter = true;  // Enable Bollinger Bands filter
+input int      BBPeriod = 20;          // Bollinger Bands period
+input double   BBDeviation = 2.0;      // Bollinger Bands deviation
+input ENUM_APPLIED_PRICE BBPrice = PRICE_CLOSE; // Bollinger Bands price type
 
 input group    "=== ADX Filter ==="
-input bool     UseADXFilter = true;     // ADX filter
+input bool     UseADXFilter = false;     // Enable ADX filter
 input int      ADXPeriod = 14;          // ADX period
 input double   MinADX = 25.0;           // Minimum ADX value
-input double   MaxADX = 50.0;           // Maximum ADX value
+input double   MaxADX = 100.0;           // Maximum ADX value
 
 input group    "=== RSI Filter ==="
-input bool     UseRSIFilter = true;     // RSI filter
+input bool     UseRSIFilter = false;     // Enable RSI filter
 input int      RSIPeriod = 14;          // RSI period
 input double   RSIOverbought = 70.0;    // RSI overbought level
 input double   RSIOversold = 30.0;      // RSI oversold level
 
 input group    "=== Exit Conditions ==="
-input int      Tral = 5;             // Trailing stop (pips)
-input int      TralStart = 20;        // Trailing start (pips)
-input double   TakeProfit = 30;       // Take profit (pips)
+input int      Tral = 5;             // Trailing stop in pips
+input int      TralStart = 20;        // Trailing stop start in pips
+input double   TakeProfit = 30;       // Take profit in pips
 
 input group    "=== Interface Settings ==="
-input bool     Info = true;            // Show panel
-input int      FontSize = 12;          // Font size
-input color    TextColor = clrWhite;   // Text color
+input bool     Info = true;            // Show information panel
+input int      FontSize = 12;          // Panel font size
+input color    TextColor = clrWhite;   // Panel text color
+
+input group    "=== Anti Drawdown Settings ==="
+input bool     UseAntiDrawdown = true;     // Enable anti-drawdown system
+input double   MaxDrawdown = 10.0;         // Maximum drawdown in account currency
 
 // Global variables
 CTrade trade;
@@ -258,36 +261,24 @@ void OnTick() {
       }
    }
    
-   // Check conditions based on chosen direction, Bollinger Bands, ADX and RSI
+   // Check conditions based on chosen direction
    if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
-      bool bollingerCondition = !UseBollingerFilter || 
-                              (currentBid > upperBand) || 
-                              (AllowBollingerContinuation && buyPositions > 0 && isInsideBands);
-      
-      if(bollingerCondition && adxCondition && rsiCondition) {
-         canOpenBuy = true;
-         Print("Buy condition met", 
-               UseBollingerFilter ? 
-                  (currentBid > upperBand ? " - Above upper Bollinger band" : 
-                   (isInsideBands ? " - Inside Bollinger bands (continuation)" : "")) : "",
-               UseADXFilter ? " - ADX in range" : "",
-               UseRSIFilter ? " - RSI in range" : "");
+      if(UseBollingerFilter && currentBid > upperBand) {
+         // Check if we can open Buy positions based on Anti Drawdown
+         if(!UseAntiDrawdown || !IsDirectionInLoss(POSITION_TYPE_BUY)) {
+            canOpenBuy = true;
+            Print("Buy condition met - Price above upper band");
+         }
       }
    }
    
    if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
-      bool bollingerCondition = !UseBollingerFilter || 
-                              (currentBid < lowerBand) || 
-                              (AllowBollingerContinuation && sellPositions > 0 && isInsideBands);
-      
-      if(bollingerCondition && adxCondition && rsiCondition) {
-         canOpenSell = true;
-         Print("Sell condition met", 
-               UseBollingerFilter ? 
-                  (currentBid < lowerBand ? " - Below lower Bollinger band" : 
-                   (isInsideBands ? " - Inside Bollinger bands (continuation)" : "")) : "",
-               UseADXFilter ? " - ADX in range" : "",
-               UseRSIFilter ? " - RSI in range" : "");
+      if(UseBollingerFilter && currentBid < lowerBand) {
+         // Check if we can open Sell positions based on Anti Drawdown
+         if(!UseAntiDrawdown || !IsDirectionInLoss(POSITION_TYPE_SELL)) {
+            canOpenSell = true;
+            Print("Sell condition met - Price below lower band");
+         }
       }
    }
    
@@ -310,6 +301,15 @@ void OnTick() {
    
    // Check DCA conditions only for allowed directions
    CheckDCAConditions();
+   
+   // Check total drawdown
+   if(UseAntiDrawdown) {
+      double totalProfit = CalculateTotalProfit();
+      if(totalProfit <= -MaxDrawdown) {
+         Print("Maximum drawdown reached: ", totalProfit, " ", AccountInfoString(ACCOUNT_CURRENCY), " <= ", -MaxDrawdown, " ", AccountInfoString(ACCOUNT_CURRENCY));
+         CloseAllPositions();
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -900,4 +900,55 @@ void CreateLabel(string name, string text, int x, int y, color clr) {
    
    ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
    ChartRedraw(0);
+}
+
+//+------------------------------------------------------------------+
+//| Check if a direction is in loss                                    |
+//+------------------------------------------------------------------+
+bool IsDirectionInLoss(ENUM_POSITION_TYPE positionType) {
+   double totalProfit = 0;
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol &&
+            PositionGetInteger(POSITION_TYPE) == positionType) {
+            totalProfit += PositionGetDouble(POSITION_PROFIT);
+         }
+      }
+   }
+   
+   return totalProfit < 0;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate total profit of all positions                            |
+//+------------------------------------------------------------------+
+double CalculateTotalProfit() {
+   double totalProfit = 0;
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol) {
+            totalProfit += PositionGetDouble(POSITION_PROFIT);
+         }
+      }
+   }
+   
+   return totalProfit;
+}
+
+//+------------------------------------------------------------------+
+//| Close all positions                                                |
+//+------------------------------------------------------------------+
+void CloseAllPositions() {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+            PositionGetString(POSITION_SYMBOL) == _Symbol) {
+            trade.PositionClose(PositionGetTicket(i));
+         }
+      }
+   }
 } 
