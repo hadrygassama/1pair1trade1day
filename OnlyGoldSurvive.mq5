@@ -81,7 +81,8 @@ input bool     UseAntiDrawdown = true;     // Enable anti-drawdown
 input bool     UseWeightedLotProfit = true; // Use weighted lot profit
 input double   MinTotalProfitToAvoidDD = 50.0;         // Min profit in currency
 input double   MinProfitPerWeightedLot = 10.0;         // Min profit per lot
-input double   MaxDirectionDrawdown = 3.0;             // Max drawdown per direction (%)
+input bool     EnableStopNewTradesOnDirectionLoss = true; // Enable stop new trades on direction loss
+input double   StopNewTradesOnDirectionLoss = 3.0;     // Stop new trades when direction loss reaches this percentage
 
 // Global variables
 CTrade trade;
@@ -1076,8 +1077,10 @@ bool ShouldStopTradingDirection(ENUM_POSITION_TYPE positionType) {
    double totalProfit = 0;
    double totalLots = 0;
    double weightedProfit = 0;
-   double directionProfit = 0;
-   double directionLots = 0;
+   double buyProfit = 0;
+   double sellProfit = 0;
+   double buyLots = 0;
+   double sellLots = 0;
    
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       if(PositionSelectByTicket(PositionGetTicket(i))) {
@@ -1089,41 +1092,48 @@ bool ShouldStopTradingDirection(ENUM_POSITION_TYPE positionType) {
             totalLots += positionLots;
             weightedProfit += positionProfit / positionLots;
             
-            // Calculate profit for the specific direction
-            if(PositionGetInteger(POSITION_TYPE) == positionType) {
-               directionProfit += positionProfit;
-               directionLots += positionLots;
+            // Calculate profit for each direction
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+               buyProfit += positionProfit;
+               buyLots += positionLots;
+            }
+            else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
+               sellProfit += positionProfit;
+               sellLots += positionLots;
             }
          }
       }
    }
    
-   // Calculate average profit per weighted lot
-   double avgProfitPerLot = totalLots > 0 ? weightedProfit / totalLots : 0;
+   // Calculate drawdowns for both directions
+   double buyDD = buyProfit < 0 ? MathAbs(buyProfit) / initialBalance * 100 : 0;
+   double sellDD = sellProfit < 0 ? MathAbs(sellProfit) / initialBalance * 100 : 0;
    
-   // Calculate drawdown for the specific direction
-   double directionDD = 0;
-   if(directionProfit < 0) {
-      directionDD = MathAbs(directionProfit) / initialBalance * 100;
-   }
-   
-   // Check if drawdown exceeds configured threshold
-   if(directionDD > MaxDirectionDrawdown) {
-      return true;
-   }
-   
-   // Check conditions based on selected method
-   if(UseWeightedLotProfit) {
-      // Use profit per weighted lot
-      if(avgProfitPerLot >= MinProfitPerWeightedLot) {
-         CloseAllPositions();
-         return true;
+   // Check if we should stop trading in this direction based on drawdown
+   if(EnableStopNewTradesOnDirectionLoss) {
+      double directionDD = positionType == POSITION_TYPE_BUY ? buyDD : sellDD;
+      if(directionDD > StopNewTradesOnDirectionLoss) {
+         return true; // Stop trading in this direction
       }
-   } else {
-      // Use fixed currency amount
-      if(totalProfit >= MinTotalProfitToAvoidDD) {
-         CloseAllPositions();
-         return true;
+   }
+   
+   // Check anti-drawdown conditions only if enabled
+   if(UseAntiDrawdown) {
+      // Calculate average profit per weighted lot
+      double avgProfitPerLot = totalLots > 0 ? weightedProfit / totalLots : 0;
+      
+      if(UseWeightedLotProfit) {
+         // Use profit per weighted lot
+         if(avgProfitPerLot >= MinProfitPerWeightedLot) {
+            CloseAllPositions();
+            return true;
+         }
+      } else {
+         // Use fixed currency amount
+         if(totalProfit >= MinTotalProfitToAvoidDD) {
+            CloseAllPositions();
+            return true;
+         }
       }
    }
    
@@ -1188,6 +1198,10 @@ void PrintStatusLine() {
       }
    }
    
+   // Calculate drawdowns
+   double buyDD = buyProfit < 0 ? MathAbs(buyProfit) / initialBalance * 100 : 0;
+   double sellDD = sellProfit < 0 ? MathAbs(sellProfit) / initialBalance * 100 : 0;
+   
    // Get ADX value if enabled
    double adxValue = 0;
    if(UseADXFilter) {
@@ -1203,10 +1217,10 @@ void PrintStatusLine() {
    }
    
    // Print single line with all important info
-   PrintFormat("Bid: %.5f | BuyLine: %.5f | SellLine: %.5f | Buy: %d(%.2f/%.2f) | Sell: %d(%.2f/%.2f) | Spread: %.1f | ADX: %.1f | RSI: %.1f",
+   PrintFormat("Bid: %.5f | BuyLine: %.5f | SellLine: %.5f | Buy: %d(%.2f/%.2f) [DD:%.2f%%] | Sell: %d(%.2f/%.2f) [DD:%.2f%%] | Spread: %.1f | ADX: %.1f | RSI: %.1f",
          currentBid, buyLine, sellLine, 
-         buyPositions, buyProfit, buyLots,
-         sellPositions, sellProfit, sellLots,
+         buyPositions, buyProfit, buyLots, buyDD,
+         sellPositions, sellProfit, sellLots, sellDD,
          spread, adxValue, rsiValue);
 }
 
