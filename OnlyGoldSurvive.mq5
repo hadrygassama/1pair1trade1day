@@ -46,17 +46,17 @@ input int      TimeEndHour = 23;       // Trading end hour (GMT)
 input int      TimeEndMinute = 59;     // Trading end minute
 
 input group    "=== Bollinger Bands Filter ==="
-input bool     UseBollingerFilter = true;  // Enable Bollinger Bands filter
-input int      BBPeriod = 20;          // Bollinger Bands period
-input double   BBDeviation = 2.0;      // Bollinger Bands deviation
-input ENUM_APPLIED_PRICE BBPrice = PRICE_CLOSE; // Bollinger Bands price type
-input int      MinDistanceFromBB = 10;  // Minimum distance from Bollinger Bands in pips
+input bool     UseBollingerFilter = true;  // Enable BB filter
+input int      BBPeriod = 20;          // BB period
+input double   BBDeviation = 2.0;      // BB deviation
+input ENUM_APPLIED_PRICE BBPrice = PRICE_CLOSE; // BB price type
+input int      MinDistanceFromBB = 10;  // Minimum distance from BB in pips
 
 input group    "=== ADX Filter ==="
 input bool     UseADXFilter = true;     // Enable ADX filter
 input int      ADXPeriod = 14;          // ADX period
 input double   MinADX = 25.0;           // Minimum ADX value
-input double   MaxADX = 50.0;           // Maximum ADX value
+input double   MaxADX = 100.0;           // Maximum ADX value
 
 input group    "=== RSI Filter ==="
 input bool     UseRSIFilter = false;     // Enable RSI filter
@@ -76,10 +76,10 @@ input color    TextColor = clrWhite;   // Panel text color
 input bool     ShowTradeLogs = false;  // Show trade logs
 
 input group    "=== Anti Drawdown Settings ==="
-input bool     UseAntiDrawdown = true;     // Enable anti-drawdown system
-input bool     UseWeightedLotProfit = true; // Use profit per weighted lot instead of fixed currency
-input double   MinTotalProfitToAvoidDD = 50.0;         // Minimum total profit in currency to avoid drawdown
-input double   MinProfitPerWeightedLot = 10.0;         // Minimum profit in pips per weighted lot to avoid drawdown
+input bool     UseAntiDrawdown = true;     // Enable anti-drawdown
+input bool     UseWeightedLotProfit = true; // Use weighted lot profit
+input double   MinTotalProfitToAvoidDD = 50.0;         // Min profit in currency
+input double   MinProfitPerWeightedLot = 10.0;         // Min profit per lot
 
 // Global variables
 CTrade trade;
