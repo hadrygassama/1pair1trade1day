@@ -56,7 +56,7 @@ input group    "=== ADX Filter ==="
 input bool     UseADXFilter = true;     // Enable ADX filter
 input int      ADXPeriod = 14;          // ADX period
 input double   MinADX = 25.0;           // Minimum ADX value
-input double   MaxADX = 100.0;           // Maximum ADX value
+input double   MaxADX = 50.0;           // Maximum ADX value
 
 input group    "=== RSI Filter ==="
 input bool     UseRSIFilter = false;     // Enable RSI filter
@@ -77,7 +77,9 @@ input bool     ShowTradeLogs = false;  // Show trade logs
 
 input group    "=== Anti Drawdown Settings ==="
 input bool     UseAntiDrawdown = true;     // Enable anti-drawdown system
-input double   MaxDrawdown = 50.0;         // Maximum drawdown in account currency
+input bool     UseWeightedLotProfit = true; // Use profit per weighted lot instead of fixed currency
+input double   MinTotalProfitToAvoidDD = 50.0;         // Minimum total profit in currency to avoid drawdown
+input double   MinProfitPerWeightedLot = 10.0;         // Minimum profit in pips per weighted lot to avoid drawdown
 
 // Global variables
 CTrade trade;
@@ -848,55 +850,78 @@ void UpdateInfoPanel() {
    
    ObjectsDeleteAll(0, prefix);
    
+   // Create background rectangle
+   CreateRectangle(prefix + "Background", x - 5, y - 5, 300, 600, clrBlack, 200);
+   
    // Display EA status
    CreateLabel(prefix + "Title", "=== EA Status ===", x, y, TextColor);
    y += yStep;
    
-   // Display current spread
+   // Display current spread with dynamic color
    double spread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double spreadInPips = spread / (_Point * 10);
-   CreateLabel(prefix + "Spread", StringFormat("Spread: %.1f pips", spreadInPips), x, y, TextColor);
+   color spreadColor = GetDynamicColor(spreadInPips, MaxSpread, 0);
+   CreateLabel(prefix + "Spread", StringFormat("Spread: %.1f pips", spreadInPips), x, y, spreadColor);
    y += yStep;
    
-   // Display Bollinger Bands info
+   // Display account information
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double profit = equity - balance;
+   double profitPercent = (profit / balance) * 100;
+   
+   CreateLabel(prefix + "Balance", StringFormat("Balance: %.2f", balance), x, y, TextColor);
+   y += yStep;
+   CreateLabel(prefix + "Equity", StringFormat("Equity: %.2f", equity), x, y, TextColor);
+   y += yStep;
+   CreateLabel(prefix + "Profit", StringFormat("Profit: %.2f (%.2f%%)", profit, profitPercent), 
+              x, y, profit >= 0 ? clrLime : clrRed);
+   y += yStep;
+   
+   // Display Bollinger Bands info with dynamic color
    bollingerBands.Refresh();
    double upperBand = bollingerBands.Upper(0);
    double lowerBand = bollingerBands.Lower(0);
    double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double distanceFromUpper = (currentBid - upperBand) / (_Point * 10);
+   double distanceFromLower = (lowerBand - currentBid) / (_Point * 10);
    
    CreateLabel(prefix + "BBFilter", StringFormat("BB Filter: %s", UseBollingerFilter ? "ON" : "OFF"), x, y, TextColor);
    y += yStep;
    
    if(UseBollingerFilter) {
-      CreateLabel(prefix + "BBUpper", StringFormat("BB Upper: %.5f", upperBand), x, y, TextColor);
+      color bbColor = GetDynamicColor(distanceFromUpper, MinDistanceFromBB, -MinDistanceFromBB);
+      CreateLabel(prefix + "BBUpper", StringFormat("BB Upper: %.5f", upperBand), x, y, bbColor);
       y += yStep;
-      CreateLabel(prefix + "BBLower", StringFormat("BB Lower: %.5f", lowerBand), x, y, TextColor);
+      CreateLabel(prefix + "BBLower", StringFormat("BB Lower: %.5f", lowerBand), x, y, bbColor);
       y += yStep;
       CreateLabel(prefix + "BBStatus", StringFormat("BB Status: %s", 
                  currentBid > upperBand ? "Above Upper" : (currentBid < lowerBand ? "Below Lower" : "Inside Bands")), 
-                 x, y, TextColor);
+                 x, y, bbColor);
       y += yStep;
    }
    
-   // Display ADX info
+   // Display ADX info with dynamic color
    if(UseADXFilter) {
       CreateLabel(prefix + "ADXFilter", StringFormat("ADX Filter: %s", UseADXFilter ? "ON" : "OFF"), x, y, TextColor);
       y += yStep;
       
       double adxValue = adxIndicator.Main(0);
+      color adxColor = GetDynamicColor(adxValue, MaxADX, MinADX);
       CreateLabel(prefix + "ADXValue", StringFormat("ADX: %.1f (Min: %.1f, Max: %.1f)", 
-                 adxValue, MinADX, MaxADX), x, y, TextColor);
+                 adxValue, MinADX, MaxADX), x, y, adxColor);
       y += yStep;
    }
    
-   // Display RSI info
+   // Display RSI info with dynamic color
    if(UseRSIFilter) {
       CreateLabel(prefix + "RSIFilter", StringFormat("RSI Filter: %s", UseRSIFilter ? "ON" : "OFF"), x, y, TextColor);
       y += yStep;
       
       double rsiValue = rsiIndicator.Main(0);
+      color rsiColor = GetDynamicColor(rsiValue, RSIOverbought, RSIOversold);
       CreateLabel(prefix + "RSIValue", StringFormat("RSI: %.1f (Overbought: %.1f, Oversold: %.1f)", 
-                 rsiValue, RSIOverbought, RSIOversold), x, y, TextColor);
+                 rsiValue, RSIOverbought, RSIOversold), x, y, rsiColor);
       y += yStep;
    }
    
@@ -1087,22 +1112,40 @@ bool HasBothPositionsOpen() {
 bool ShouldStopTradingDirection(ENUM_POSITION_TYPE positionType) {
    if(!HasBothPositionsOpen()) return false;
    
-   // Calculate total profit
+   // Calculate total profit and weighted lot profit
    double totalProfit = 0;
+   double totalLots = 0;
+   double weightedProfit = 0;
    
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       if(PositionSelectByTicket(PositionGetTicket(i))) {
          if(PositionGetInteger(POSITION_MAGIC) == Magic && 
             PositionGetString(POSITION_SYMBOL) == _Symbol) {
-            totalProfit += PositionGetDouble(POSITION_PROFIT);
+            double positionLots = PositionGetDouble(POSITION_VOLUME);
+            double positionProfit = PositionGetDouble(POSITION_PROFIT);
+            totalProfit += positionProfit;
+            totalLots += positionLots;
+            weightedProfit += positionProfit / positionLots;
          }
       }
    }
    
-   // If total profit is greater than or equal to 10, close all positions
-   if(totalProfit >= 10.0) {
-      CloseAllPositions();
-      return true;
+   // Calculate average profit per weighted lot
+   double avgProfitPerLot = totalLots > 0 ? weightedProfit / totalLots : 0;
+   
+   // Check conditions based on selected method
+   if(UseWeightedLotProfit) {
+      // Use profit per weighted lot
+      if(avgProfitPerLot >= MinProfitPerWeightedLot) {
+         CloseAllPositions();
+         return true;
+      }
+   } else {
+      // Use fixed currency amount
+      if(totalProfit >= MinTotalProfitToAvoidDD) {
+         CloseAllPositions();
+         return true;
+      }
    }
    
    return false;
@@ -1186,4 +1229,51 @@ void PrintStatusLine() {
          buyPositions, buyProfit, buyLots,
          sellPositions, sellProfit, sellLots,
          spread, adxValue, rsiValue);
+}
+
+//+------------------------------------------------------------------+
+//| Create Rectangle for Panel Background                              |
+//+------------------------------------------------------------------+
+void CreateRectangle(string name, int x, int y, int width, int height, color clr, int transparency) {
+   if(ObjectFind(0, name) != -1) {
+      ObjectDelete(0, name);
+   }
+   
+   if(!ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0)) {
+      PrintFormat("Error creating rectangle: %d", GetLastError());
+      return;
+   }
+   
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, clrWhite);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 0);
+   ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+}
+
+//+------------------------------------------------------------------+
+//| Get Dynamic Color based on value range                             |
+//+------------------------------------------------------------------+
+color GetDynamicColor(double value, double maxValue, double minValue) {
+   if(value >= maxValue) return clrRed;
+   if(value <= minValue) return clrRed;
+   
+   double range = maxValue - minValue;
+   double position = (value - minValue) / range;
+   
+   if(position < 0.5) {
+      // From red to yellow
+      return clrYellow;
+   } else {
+      // From yellow to green
+      return clrGreen;
+   }
 }
