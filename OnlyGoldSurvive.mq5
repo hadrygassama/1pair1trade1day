@@ -41,9 +41,9 @@ input int      MaxSpread = 50;         // Maximum spread in pips
 
 input group    "=== Trading Hours ==="
 input int      TimeStartHour = 0;      // Trading start hour (Broker GMT time)
-input int      TimeStartMinute = 0;    // Trading start minute
+input int      TimeStartMinute = 0;    // Trading start minute (Broker GMT time)
 input int      TimeEndHour = 23;       // Trading end hour (Broker GMT time)
-input int      TimeEndMinute = 59;     // Trading end minute 
+input int      TimeEndMinute = 59;     // Trading end minute (Broker GMT time)
 
 input group    "=== Bollinger Bands Filter ==="
 input bool     UseBollingerFilter = true;  // Enable BB filter
@@ -57,6 +57,12 @@ input bool     UseADXFilter = false;     // Enable ADX filter
 input int      ADXPeriod = 14;          // ADX period
 input double   MinADX = 25.0;           // Minimum ADX value
 input double   MaxADX = 100.0;           // Maximum ADX value
+
+input group    "=== RSI Filter ==="
+input bool     UseRSIFilter = false;     // Enable RSI filter
+input int      RSIPeriod = 14;          // RSI period
+input double   RSIOverbought = 70.0;    // RSI overbought level
+input double   RSIOversold = 30.0;      // RSI oversold level
 
 input group    "=== Exit Conditions ==="
 input int      Tral = 5;             // Trailing stop in pips
@@ -73,14 +79,15 @@ input group    "=== Anti Drawdown Settings ==="
 input bool     UseAntiDrawdown = true;     // Enable anti-drawdown
 input bool     UseWeightedLotProfit = true; // Use weighted lot profit
 input double   MinTotalProfitToAvoidDD = 50.0;         // Min profit in currency
-input double   MinProfitPerWeightedLot = 50.0;         // Min profit per lot
-input bool     EnableStopNewTradesOnDirectionLoss = true; // Stop trades on loss
-input double   StopNewTradesOnDirectionLoss = 3.0;     // Loss threshold (%)
+input double   MinProfitPerWeightedLot = 10.0;         // Min profit per lot
+input bool     EnableStopNewTradesOnDirectionLoss = true; // Enable stop new trades on direction loss
+input double   StopNewTradesOnDirectionLoss = 3.0;     // Stop new trades when direction loss reaches this percentage
 
 // Global variables
 CTrade trade;
 CiBands bollingerBands;
 CiADX adxIndicator;  // Add ADX indicator
+CiRSI rsiIndicator;  // Add RSI indicator
 string expertName = "OnlyGoldSurvive";
 datetime lastOpenTime = 0;
 datetime lastBuyPositionTime = 0;      // Time of the last Buy position
@@ -110,6 +117,7 @@ bool cacheNeedsUpdate = true; // Nouvelle variable pour suivre si le cache doit 
 double cachedUpperBand = 0;
 double cachedLowerBand = 0;
 double cachedADXValue = 0;
+double cachedRSIValue = 0;
 datetime lastIndicatorUpdate = 0;
 int indicatorUpdateInterval = 5; // Mise à jour des indicateurs toutes les 5 secondes
 
@@ -148,6 +156,12 @@ int OnInit() {
       return(INIT_FAILED);
    }
    
+   // Initialize RSI
+   if(UseRSIFilter && !rsiIndicator.Create(_Symbol, PERIOD_CURRENT, RSIPeriod, PRICE_CLOSE)) {
+      PrintFormat("Error creating RSI indicator: %d", GetLastError());
+      return(INIT_FAILED);
+   }
+   
    PrintFormat("EA initialized - Magic: %d", Magic);
    return(INIT_SUCCEEDED);
 }
@@ -177,7 +191,6 @@ void OnTick() {
    
    // Vérification de la connexion au serveur
    if(!TerminalInfoInteger(TERMINAL_CONNECTED)) {
-      Print("=== ERREUR - Pas de connexion au serveur ===");
       PrintStatusLine();
       return;
    }
@@ -193,19 +206,12 @@ void OnTick() {
    int gmtHour = timeStruct.hour;
    int gmtMinute = timeStruct.min;
    
-   Print("=== DEBUG - Trading Hours ===");
-   Print("Server Local Time: ", TimeToString(currentTime, TIME_MINUTES|TIME_SECONDS));
-   Print("Server GMT Time: ", TimeToString(gmtTime, TIME_MINUTES|TIME_SECONDS));
-   Print("Computer Local Time: ", TimeToString(localTime, TIME_MINUTES|TIME_SECONDS));
-   Print("Trading Hours: ", TimeStartHour, ":", TimeStartMinute, " to ", TimeEndHour, ":", TimeEndMinute, " GMT");
-   
    // Convert trading hours to minutes for comparison
    int currentTimeInMinutes = gmtHour * 60 + gmtMinute;
    int startTimeInMinutes = TimeStartHour * 60 + TimeStartMinute;
    int endTimeInMinutes = TimeEndHour * 60 + TimeEndMinute;
    
    if(currentTimeInMinutes < startTimeInMinutes || currentTimeInMinutes >= endTimeInMinutes) {
-      Print("Outside trading hours - Current GMT: ", gmtHour, ":", gmtMinute);
       PrintStatusLine();
       return;
    }
@@ -229,15 +235,7 @@ void OnTick() {
       spreadInPips = currentSpread / _Point;
    }
    
-   Print("=== DEBUG - Spread Calculation ===");
-   Print("Symbol: ", _Symbol);
-   Print("Digits: ", digits);
-   Print("Current Spread: ", currentSpread);
-   Print("Spread in Pips: ", spreadInPips);
-   Print("Max Spread: ", MaxSpread);
-   
    if(spreadInPips > MaxSpread) {
-      Print("Spread too high: ", spreadInPips, " > ", MaxSpread, " pips");
       PrintStatusLine();
       return;
    }
@@ -429,8 +427,6 @@ bool CheckMinimumDistance(ENUM_POSITION_TYPE positionType, int minDistancePips) 
             double distanceInPips = MathAbs(currentPrice - positionPrice) / (_Point * 10);
             
             if(distanceInPips < minDistancePips) {
-               Print("Minimum distance not met: ", NormalizeDouble(distanceInPips, 1), 
-                     " pips < ", minDistancePips, " pips");
                return false;
             }
          }
@@ -978,35 +974,21 @@ bool ShouldStopTradingDirection(ENUM_POSITION_TYPE direction) {
     // Calculate drawdowns
     double buyDD = cachedBuyDD;
     double sellDD = cachedSellDD;
-    double totalDD = cachedTotalDD;
     
     // Get direction-specific drawdown
     double directionDD = (direction == POSITION_TYPE_BUY) ? buyDD : sellDD;
+    double oppositeDD = (direction == POSITION_TYPE_BUY) ? sellDD : buyDD;
     
-    Print("=== DEBUG - ShouldStopTradingDirection ===");
-    Print("Direction: ", EnumToString(direction));
-    Print("EnableStopNewTradesOnDirectionLoss: ", EnableStopNewTradesOnDirectionLoss);
-    Print("StopNewTradesOnDirectionLoss: ", StopNewTradesOnDirectionLoss, "%");
-    Print("Buy DD: ", buyDD, "%");
-    Print("Sell DD: ", sellDD, "%");
-    Print("Total DD: ", totalDD, "%");
-    Print("Initial Balance: ", initialBalance);
-    Print("Cached Buy Profit: ", cachedBuyProfit);
-    Print("Cached Sell Profit: ", cachedSellProfit);
-    Print("Current Direction DD: ", directionDD, "%");
-    Print("StopNewTradesOnDirectionLoss: ", StopNewTradesOnDirectionLoss, "%");
-    
-    // Check if either direction-specific or total drawdown exceeds limit
-    if(directionDD >= StopNewTradesOnDirectionLoss || totalDD >= StopNewTradesOnDirectionLoss) {
-        Print("=== STOP TRADING ===");
-        Print("Direction: ", EnumToString(direction));
-        Print("Reason: Direction DD ", directionDD, "% >= ", StopNewTradesOnDirectionLoss, "% OR Total DD ", totalDD, "% >= ", StopNewTradesOnDirectionLoss, "%");
+    // Si la direction spécifique est en DD, on arrête cette direction
+    if(directionDD >= StopNewTradesOnDirectionLoss) {
         return true;
     }
     
-    Print("=== CONTINUE TRADING ===");
-    Print("Direction: ", EnumToString(direction));
-    Print("Reason: DD ", directionDD, "% < ", StopNewTradesOnDirectionLoss, "% AND Total DD ", totalDD, "% < ", StopNewTradesOnDirectionLoss, "%");
+    // Si la direction opposée est en DD, on permet les trades ANTI DD
+    if(oppositeDD >= StopNewTradesOnDirectionLoss) {
+        return false;
+    }
+    
     return false;
 }
 
@@ -1079,12 +1061,19 @@ void PrintStatusLine() {
       adxValue = adxIndicator.Main(0);
    }
    
+   // Get RSI value if enabled
+   double rsiValue = 0;
+   if(UseRSIFilter) {
+      rsiIndicator.Refresh();
+      rsiValue = rsiIndicator.Main(0);
+   }
+   
    // Print single line with all important info
-   PrintFormat("Bid: %.5f | BuyLine: %.5f | SellLine: %.5f | Buy: %d(%.2f/%.2f) [DD:%.2f%%] | Sell: %d(%.2f/%.2f) [DD:%.2f%%] | Spread: %.1f | ADX: %.1f",
+   PrintFormat("Bid: %.5f | BuyLine: %.5f | SellLine: %.5f | Buy: %d(%.2f/%.2f) [DD:%.2f%%] | Sell: %d(%.2f/%.2f) [DD:%.2f%%] | Spread: %.1f | ADX: %.1f | RSI: %.1f",
          currentBid, buyLine, sellLine, 
          buyPositions, buyProfit, buyLots, buyDD,
          sellPositions, sellProfit, sellLots, sellDD,
-         spread, adxValue);
+         spread, adxValue, rsiValue);
 }
 
 //+------------------------------------------------------------------+
@@ -1204,6 +1193,11 @@ void UpdateIndicators() {
       cachedADXValue = adxIndicator.Main(0);
    }
    
+   if(UseRSIFilter) {
+      rsiIndicator.Refresh();
+      cachedRSIValue = rsiIndicator.Main(0);
+   }
+   
    lastIndicatorUpdate = currentTime;
 }
 
@@ -1219,23 +1213,15 @@ void UpdateDrawdowns() {
    // Get current balance
    double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    
-   Print("=== DEBUG - UpdateDrawdowns ===");
-   Print("Current Balance: ", currentBalance);
-   Print("Initial Balance: ", initialBalance);
-   Print("Buy Profit: ", cachedBuyProfit);
-   Print("Sell Profit: ", cachedSellProfit);
-   
    // Calculate drawdowns based on current balance
    if(cachedBuyProfit < 0) {
       cachedBuyDD = MathAbs(cachedBuyProfit) / currentBalance * 100;
-      Print("Buy DD: ", cachedBuyDD, "% (", cachedBuyProfit, " / ", currentBalance, " * 100)");
    } else {
       cachedBuyDD = 0;
    }
    
    if(cachedSellProfit < 0) {
       cachedSellDD = MathAbs(cachedSellProfit) / currentBalance * 100;
-      Print("Sell DD: ", cachedSellDD, "% (", cachedSellProfit, " / ", currentBalance, " * 100)");
    } else {
       cachedSellDD = 0;
    }
@@ -1243,7 +1229,6 @@ void UpdateDrawdowns() {
    double totalProfit = cachedBuyProfit + cachedSellProfit;
    if(totalProfit < 0) {
       cachedTotalDD = MathAbs(totalProfit) / currentBalance * 100;
-      Print("Total DD: ", cachedTotalDD, "% (", totalProfit, " / ", currentBalance, " * 100)");
    } else {
       cachedTotalDD = 0;
    }
@@ -1251,15 +1236,12 @@ void UpdateDrawdowns() {
    // Update max drawdowns
    if(cachedBuyDD > maxBuyDD) {
       maxBuyDD = cachedBuyDD;
-      Print("New Max Buy DD: ", maxBuyDD, "%");
    }
    if(cachedSellDD > maxSellDD) {
       maxSellDD = cachedSellDD;
-      Print("New Max Sell DD: ", maxSellDD, "%");
    }
    if(cachedTotalDD > maxTotalDD) {
       maxTotalDD = cachedTotalDD;
-      Print("New Max Total DD: ", maxTotalDD, "%");
    }
    
    lastDDUpdate = currentTime;
@@ -1279,27 +1261,28 @@ void CheckTradingConditions() {
    // Get current price
    double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    
-   Print("=== DEBUG - CheckTradingConditions ===");
-   Print("Current Bid: ", currentBid);
-   Print("Upper Band: ", cachedUpperBand);
-   Print("Lower Band: ", cachedLowerBand);
+   // Calculate drawdowns
+   double buyDD = cachedBuyDD;
+   double sellDD = cachedSellDD;
    
    // Check conditions based on chosen direction
    if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
       if(UseBollingerFilter) {
          double upperBandMinusPips = cachedUpperBand - (MinDistanceFromBB * _Point * 10);
-         Print("Buy Line (Upper Band - MinDistance): ", upperBandMinusPips);
          
          if(currentBid > upperBandMinusPips) {
-            Print("Price above Buy Line - Checking drawdown...");
-            if(!UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_BUY)) {
-               cachedCanTradeBuy = true;
-               Print("BUY position allowed");
-            } else {
-               Print("BUY position blocked by drawdown check");
+            // Si Buy est en DD, on arrête les trades Buy
+            if(buyDD >= StopNewTradesOnDirectionLoss) {
+               cachedCanTradeBuy = false;
             }
-         } else {
-            Print("Price below Buy Line - No BUY position");
+            // Si Sell est en DD, on permet les trades Buy ANTI DD
+            else if(sellDD >= StopNewTradesOnDirectionLoss) {
+               cachedCanTradeBuy = true;
+            }
+            // Si aucun DD, on permet les trades Buy normaux
+            else {
+               cachedCanTradeBuy = true;
+            }
          }
       }
    }
@@ -1307,18 +1290,20 @@ void CheckTradingConditions() {
    if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
       if(UseBollingerFilter) {
          double lowerBandPlusPips = cachedLowerBand + (MinDistanceFromBB * _Point * 10);
-         Print("Sell Line (Lower Band + MinDistance): ", lowerBandPlusPips);
          
          if(currentBid < lowerBandPlusPips) {
-            Print("Price below Sell Line - Checking drawdown...");
-            if(!UseAntiDrawdown || !ShouldStopTradingDirection(POSITION_TYPE_SELL)) {
-               cachedCanTradeSell = true;
-               Print("SELL position allowed");
-            } else {
-               Print("SELL position blocked by drawdown check");
+            // Si Sell est en DD, on arrête les trades Sell
+            if(sellDD >= StopNewTradesOnDirectionLoss) {
+               cachedCanTradeSell = false;
             }
-         } else {
-            Print("Price above Sell Line - No SELL position");
+            // Si Buy est en DD, on permet les trades Sell ANTI DD
+            else if(buyDD >= StopNewTradesOnDirectionLoss) {
+               cachedCanTradeSell = true;
+            }
+            // Si aucun DD, on permet les trades Sell normaux
+            else {
+               cachedCanTradeSell = true;
+            }
          }
       }
    }
