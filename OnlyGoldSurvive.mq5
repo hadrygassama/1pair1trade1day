@@ -27,17 +27,17 @@ input group    "=== Position Sizing ==="
 input double   Lots = 0.5;             // Base lot size
 input double   LotMultiplier = 1.5;    // Lot size multiplier
 input double   MaxLot = 1.5;           // Maximum lot size
-input bool     EnableMaxPosition = true;     // Enable position limits
+input bool     EnableMaxPosition = false;     // Enable position limits
 input int      MaxBuyPositions = 30;    // Maximum Buy positions
 input int      MaxSellPositions = 30;   // Maximum Sell positions
 
 input group    "=== Entry Conditions ==="
+input int      PipsStep = 20;          // Price step in pips
+input int      MaxSpread = 50;         // Maximum spread in pips
 input bool     UseMinDistance = false;  // Minimum distance check
 input int      MinDistancePips = 30;   // Minimum distance in pips
 input bool     UseMinTime = false;      // Minimum time check
 input int      OpenTime = 60;          // Minimum time in seconds
-input int      PipsStep = 20;          // Price step in pips
-input int      MaxSpread = 50;         // Maximum spread in pips
 
 input group    "=== Trading Hours ==="
 input int      TimeStartHour = 0;      // Trading start hour (Broker GMT time)
@@ -61,8 +61,10 @@ input double   MaxADX = 100.0;           // Maximum ADX value
 input group    "=== RSI Filter ==="
 input bool     UseRSIFilter = false;     // Enable RSI filter
 input int      RSIPeriod = 14;          // RSI period
-input double   RSIOverbought = 70.0;    // RSI overbought level
-input double   RSIOversold = 30.0;      // RSI oversold level
+input double   RSIBuyStart = 30.0;      // RSI Buy start level
+input double   RSIBuyEnd = 70.0;        // RSI Buy end level
+input double   RSISellStart = 30.0;     // RSI Sell start level
+input double   RSISellEnd = 70.0;       // RSI Sell end level
 
 input group    "=== Exit Conditions ==="
 input int      Tral = 5;             // Trailing stop in pips
@@ -74,14 +76,6 @@ input bool     Info = true;            // Show information panel
 input int      FontSize = 12;          // Panel font size
 input color    TextColor = clrWhite;   // Panel text color
 input bool     ShowTradeLogs = false;  // Show trade logs
-
-input group    "=== Anti Drawdown Settings ==="
-input bool     UseAntiDrawdown = true;     // Enable anti-drawdown
-input bool     UseWeightedLotProfit = true; // Use weighted lot profit
-input double   MinTotalProfitToAvoidDD = 50.0;         // Min profit in currency
-input double   MinProfitPerWeightedLot = 10.0;         // Min profit per lot
-input bool     EnableStopNewTradesOnDirectionLoss = true; // Enable stop new trades on direction loss
-input double   StopNewTradesOnDirectionLoss = 3.0;     // Stop new trades when direction loss reaches this percentage
 
 // Global variables
 CTrade trade;
@@ -326,9 +320,6 @@ void OpenBuyOrder() {
          
          if(!hasPositionAtLevel) {
             string comment = expertName;
-            if(UseAntiDrawdown && IsDirectionInLoss(POSITION_TYPE_BUY)) {
-               comment += " [ANTI DD]";
-            }
             if(trade.Buy(calculatedLots, _Symbol, 0, 0, 0, comment)) {
                lastBuyPositionTime = currentTime; // Update time of last Buy position
             }
@@ -396,9 +387,6 @@ void OpenSellOrder() {
          
          if(!hasPositionAtLevel) {
             string comment = expertName;
-            if(UseAntiDrawdown && IsDirectionInLoss(POSITION_TYPE_SELL)) {
-               comment += " [ANTI DD]";
-            }
             if(trade.Sell(calculatedLots, _Symbol, 0, 0, 0, comment)) {
                lastSellPositionTime = currentTime; // Update time of last Sell position
             }
@@ -523,34 +511,7 @@ void UpdateTrailingStops() {
    if(buyPositionCount > 0) buyAveragePrice /= buyTotalLots;
    if(sellPositionCount > 0) sellAveragePrice /= sellTotalLots;
    
-   // Calculate global profit and lots
-   double totalProfit = buyTotalProfit + sellTotalProfit;
-   double totalLots = buyTotalLots + sellTotalLots;
-   
-   // Check global weighted profit per lot
-   if(UseWeightedLotProfit && totalLots > 0) {
-      double globalProfitPerLot = totalProfit / totalLots;
-      
-      // If we have positions on both sides
-      if(buyPositionCount > 0 && sellPositionCount > 0) {
-         // Only close if profit per lot is positive AND above threshold
-         if(globalProfitPerLot > 0 && globalProfitPerLot >= MinProfitPerWeightedLot) {
-            if(ShowTradeLogs) {
-               PrintFormat("Closing all positions - Profit per lot: %.2f >= %.2f AND Total profit: %.2f", 
-                          globalProfitPerLot, MinProfitPerWeightedLot, totalProfit);
-            }
-            CloseAllPositions();
-            return;
-         }
-      }
-   }
-   
-   // If we have both positions, don't use TP or Trailing
-   if(buyPositionCount > 0 && sellPositionCount > 0) {
-      return;
-   }
-   
-   // Manage profits and trailing stops only if we don't have both positions
+   // Manage Buy positions independently
    if(buyPositionCount > 0) {
       double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double buyProfitInPoints = (currentBid - buyAveragePrice) / _Point;
@@ -605,6 +566,7 @@ void UpdateTrailingStops() {
       }
    }
    
+   // Manage Sell positions independently
    if(sellPositionCount > 0) {
       double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double sellProfitInPoints = (sellAveragePrice - currentAsk) / _Point;
@@ -809,6 +771,15 @@ void UpdateInfoPanel() {
    y += yStep;
    totalLines++;
    
+   // Display ADX value if enabled
+   if(UseADXFilter) {
+      UpdateIndicators(); // Make sure ADX is up to date
+      color adxColor = GetDynamicColor(cachedADXValue, MaxADX, MinADX);
+      CreateLabel(prefix + "ADX", StringFormat("ADX: %.1f", cachedADXValue), x, y, adxColor);
+      y += yStep;
+      totalLines++;
+   }
+   
    // Display account information
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -969,26 +940,6 @@ double CalculateTotalProfit() {
 //| Check if we should stop trading in a direction                    |
 //+------------------------------------------------------------------+
 bool ShouldStopTradingDirection(ENUM_POSITION_TYPE direction) {
-    if(!EnableStopNewTradesOnDirectionLoss) return false;
-    
-    // Calculate drawdowns
-    double buyDD = cachedBuyDD;
-    double sellDD = cachedSellDD;
-    
-    // Get direction-specific drawdown
-    double directionDD = (direction == POSITION_TYPE_BUY) ? buyDD : sellDD;
-    double oppositeDD = (direction == POSITION_TYPE_BUY) ? sellDD : buyDD;
-    
-    // Si la direction spécifique est en DD, on arrête cette direction
-    if(directionDD >= StopNewTradesOnDirectionLoss) {
-        return true;
-    }
-    
-    // Si la direction opposée est en DD, on permet les trades ANTI DD
-    if(oppositeDD >= StopNewTradesOnDirectionLoss) {
-        return false;
-    }
-    
     return false;
 }
 
@@ -1261,27 +1212,20 @@ void CheckTradingConditions() {
    // Get current price
    double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    
-   // Calculate drawdowns
-   double buyDD = cachedBuyDD;
-   double sellDD = cachedSellDD;
-   
    // Check conditions based on chosen direction
    if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
       if(UseBollingerFilter) {
          double upperBandMinusPips = cachedUpperBand - (MinDistanceFromBB * _Point * 10);
          
          if(currentBid > upperBandMinusPips) {
-            // Si Buy est en DD, on arrête les trades Buy
-            if(buyDD >= StopNewTradesOnDirectionLoss) {
-               cachedCanTradeBuy = false;
-            }
-            // Si Sell est en DD, on permet les trades Buy ANTI DD
-            else if(sellDD >= StopNewTradesOnDirectionLoss) {
-               cachedCanTradeBuy = true;
-            }
-            // Si aucun DD, on permet les trades Buy normaux
-            else {
-               cachedCanTradeBuy = true;
+            // Vérifier si on peut trader Buy
+            cachedCanTradeBuy = !ShouldStopTradingDirection(POSITION_TYPE_BUY);
+            
+            // Vérifier la condition RSI si activée
+            if(UseRSIFilter && cachedCanTradeBuy) {
+               rsiIndicator.Refresh();
+               double rsiValue = rsiIndicator.Main(0);
+               cachedCanTradeBuy = rsiValue >= RSIBuyStart && rsiValue <= RSIBuyEnd;
             }
          }
       }
@@ -1292,17 +1236,14 @@ void CheckTradingConditions() {
          double lowerBandPlusPips = cachedLowerBand + (MinDistanceFromBB * _Point * 10);
          
          if(currentBid < lowerBandPlusPips) {
-            // Si Sell est en DD, on arrête les trades Sell
-            if(sellDD >= StopNewTradesOnDirectionLoss) {
-               cachedCanTradeSell = false;
-            }
-            // Si Buy est en DD, on permet les trades Sell ANTI DD
-            else if(buyDD >= StopNewTradesOnDirectionLoss) {
-               cachedCanTradeSell = true;
-            }
-            // Si aucun DD, on permet les trades Sell normaux
-            else {
-               cachedCanTradeSell = true;
+            // Vérifier si on peut trader Sell
+            cachedCanTradeSell = !ShouldStopTradingDirection(POSITION_TYPE_SELL);
+            
+            // Vérifier la condition RSI si activée
+            if(UseRSIFilter && cachedCanTradeSell) {
+               rsiIndicator.Refresh();
+               double rsiValue = rsiIndicator.Main(0);
+               cachedCanTradeSell = rsiValue >= RSISellStart && rsiValue <= RSISellEnd;
             }
          }
       }
