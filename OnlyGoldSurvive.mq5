@@ -1214,37 +1214,41 @@ void CheckTradingConditions() {
    
    // Check conditions based on chosen direction
    if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
+      bool bollingerCondition = true;
       if(UseBollingerFilter) {
          double upperBandMinusPips = cachedUpperBand - (MinDistanceFromBB * _Point * 10);
+         bollingerCondition = currentBid > upperBandMinusPips;
+      }
+      
+      if(bollingerCondition) {
+         // Vérifier si on peut trader Buy
+         cachedCanTradeBuy = !ShouldStopTradingDirection(POSITION_TYPE_BUY);
          
-         if(currentBid > upperBandMinusPips) {
-            // Vérifier si on peut trader Buy
-            cachedCanTradeBuy = !ShouldStopTradingDirection(POSITION_TYPE_BUY);
-            
-            // Vérifier la condition RSI si activée
-            if(UseRSIFilter && cachedCanTradeBuy) {
-               rsiIndicator.Refresh();
-               double rsiValue = rsiIndicator.Main(0);
-               cachedCanTradeBuy = rsiValue >= RSIBuyStart && rsiValue <= RSIBuyEnd;
-            }
+         // Vérifier la condition RSI si activée
+         if(UseRSIFilter && cachedCanTradeBuy) {
+            rsiIndicator.Refresh();
+            double rsiValue = rsiIndicator.Main(0);
+            cachedCanTradeBuy = rsiValue >= RSIBuyStart && rsiValue <= RSIBuyEnd;
          }
       }
    }
    
    if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
+      bool bollingerCondition = true;
       if(UseBollingerFilter) {
          double lowerBandPlusPips = cachedLowerBand + (MinDistanceFromBB * _Point * 10);
+         bollingerCondition = currentBid < lowerBandPlusPips;
+      }
+      
+      if(bollingerCondition) {
+         // Vérifier si on peut trader Sell
+         cachedCanTradeSell = !ShouldStopTradingDirection(POSITION_TYPE_SELL);
          
-         if(currentBid < lowerBandPlusPips) {
-            // Vérifier si on peut trader Sell
-            cachedCanTradeSell = !ShouldStopTradingDirection(POSITION_TYPE_SELL);
-            
-            // Vérifier la condition RSI si activée
-            if(UseRSIFilter && cachedCanTradeSell) {
-               rsiIndicator.Refresh();
-               double rsiValue = rsiIndicator.Main(0);
-               cachedCanTradeSell = rsiValue >= RSISellStart && rsiValue <= RSISellEnd;
-            }
+         // Vérifier la condition RSI si activée
+         if(UseRSIFilter && cachedCanTradeSell) {
+            rsiIndicator.Refresh();
+            double rsiValue = rsiIndicator.Main(0);
+            cachedCanTradeSell = rsiValue >= RSISellStart && rsiValue <= RSISellEnd;
          }
       }
    }
