@@ -24,53 +24,66 @@ enum ENUM_TRADE_DIRECTION {
 };
 
 // Input parameters
-input group "=== GENERAL SETTINGS ==="
+input group "=== TRADING SETTINGS ==="
 input int      Magic = 254689;         // Magic Number
 input string   Comments = "1pair1trade1day";  // Comments
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Trade Direction
-input int      MaxSpread = 40;         // Max Spread Allowed (in points)
-input int      Slippage = 3;           // Slippage (in points)
+input int      MaxSpread = 40;         // Max Spread (points)
+input int      Slippage = 3;           // Slippage (points)
+
+input group "=== POSITION MANAGEMENT ==="
+input int      MaxBuyEntries = 25;      // Max Buy Entries
+input int      MaxSellEntries = 25;     // Max Sell Entries
+input int      MaxTotalEntries = 25;    // Max Total Entries
+input int      MaxDailyBuyTrades = 5;   // Max Daily Buy Trades
+input int      MaxDailySellTrades = 5;  // Max Daily Sell Trades
+input int      BuyStopOrders = 5;       // Buy Stop Orders Qty
+input int      SellStopOrders = 5;      // Sell Stop Orders Qty
+input int      CloseOrdersHour = 20;    // Close Orders Hour
+input int      CloseOrdersMinute = 0;   // Close Orders Minute
 
 input group "=== RISK MANAGEMENT ==="
 input double   FixedLot = 0.01;        // Fixed Lot
-input bool     EnableRiskPercent = true;  // Enable Risk Percent
-input double   RiskPercent = 1.0;      // Risk Percent
-input int      MaxDailyBuyTrades = 5;  // Maximum Daily Buy Trades
-input int      MaxDailySellTrades = 5; // Maximum Daily Sell Trades
+input bool     EnableRiskPercent = true;  // Enable Risk %
+input double   RiskPercent = 1.0;      // Risk %
+input int      TakeProfit = 1000;       // Take Profit (points)
+input int      StopLoss = 5000;         // Stop Loss (points)
+input bool     Stealth = false;         // Hide TP/SL
 
-input group "=== TAKE PROFIT & STOP LOSS ==="
-input int      TakeProfit = 1000;       // Take Profit (in points)
-input int      StopLoss = 5000;         // Stop Loss (in points)
-
-input group "=== BREAKEVEN SETTINGS ==="
+input group "=== BREAKEVEN & TRAILING ==="
 input bool     EnableBreakEven = true;  // Enable BreakEven
-input int      BreakEvenStart = 100;    // BreakEven Start (in points)
-input int      BreakEvenLevel = 80;     // BreakEven Level (in points)
+input int      BreakEvenStart = 100;    // BreakEven Start (points)
+input int      BreakEvenLevel = 80;     // BreakEven Level (points)
+input bool     EnableTrailingStop = true;  // Enable Trailing
+input int      TrailingStopStart = 500;  // Trailing Start (points)
+input int      TrailingStopLevel = 300;  // Trailing Level (points)
 
-input group "=== TRAILING STOP LOSS ==="
-input bool     EnableTrailingStop = true;  // Enable Trailing Stop Loss
-input int      TrailingStopStart = 500;  // Trailing Stop Loss Start (in points)
-input int      TrailingStopLevel = 300;  // Trailing Stop Loss Level (in points)
-input bool     Stealth = false;         // Stealth (Hide TP and SL)
+input group "=== RECOVERY SYSTEM ==="
+input bool     EnableRecovery = true;   // Enable Recovery
+input bool     EnableMinDrawdownForRecovery = false;  // Enable Min Drawdown
+input double   MinDrawdownPercentForRecovery = 2.0;   // Min Drawdown %
+input int      RecoveryMaxCycle = 5;    // Max Recovery Cycles
+input int      RecoveryClosePreviousTrades = 1;  // Close Previous Trades
+input string   RecoveryClosePriority = "Oldest First";  // Close Priority
+input double   RecoveryTPTRBEMultiplier = 2.0;   // TP/TR/BE Multiplier
+input string   RecoveryLotSizeMethod = "Multiplier";  // Lot Size Method
+input double   RecoveryLotSizeMultiplier = 1.5;  // Lot Size Multiplier
+input double   RecoveryLotSizeIncrement = 0.5;   // Lot Size Increment
+input double   RecoveryFixedLotSize = 0.10;      // Fixed Lot Size
+input double   MaximumLotSizeAllowed = 5.0;      // Max Lot Size
 
-input group "=== STRATEGY ==="
-input int      BufferDistance = 90;     // Buffer Distance (in points)
-input int      BuyStopOrders = 5;       // Quantity of Buy Stop Orders
-input int      SellStopOrders = 5;      // Quantity of Sell Stop Orders
-input int      CloseOrdersHour = 20;    // Close Pending Orders Hour
-input int      CloseOrdersMinute = 0;   // Close Pending Orders Minute
-input int      MaxBuyEntries = 25;      // Max Open Buy Entries
-input int      MaxSellEntries = 25;     // Max Open Sell Entries
-input int      MaxTotalEntries = 25;    // Max Total Open Entries
-input group "=== HIGH/LOW CALCULATION ==="
-input ENUM_TIMEFRAMES HighLowTimeframe = PERIOD_CURRENT;  // Timeframe for High/Low calculation
-input bool     ShowHighLowLine = true;  // Show Daily High and Low lines
-input color    HighLineColor = clrForestGreen; // Daily High Color
-input color    LowLineColor = clrRed;   // Daily Low Color
-input int      HighLowStartHour = 3;    // Daily High And Low Start Hour (0-23)
-input int      HighLowStartMinute = 0;  // Daily High And Low Start Minute (0-59)
-input int      HighLowEndHour = 11;      // Daily High And Low End Hour (0-23)
-input int      HighLowEndMinute = 0;    // Daily High And Low End Minute (0-59)
+input group "=== HIGH/LOW STRATEGY ==="
+input ENUM_TIMEFRAMES HighLowTimeframe = PERIOD_CURRENT;  // High/Low Timeframe
+input int      BufferDistance = 90;     // Buffer Distance (points)
+input int      HighLowStartHour = 3;    // High/Low Start Hour
+input int      HighLowStartMinute = 0;  // High/Low Start Minute
+input int      HighLowEndHour = 11;     // High/Low End Hour
+input int      HighLowEndMinute = 0;    // High/Low End Minute
+
+input group "=== VISUALIZATION ==="
+input bool     ShowHighLowLine = true;  // Show High/Low Lines
+input color    HighLineColor = clrForestGreen; // High Line Color
+input color    LowLineColor = clrRed;   // Low Line Color
 
 // Global variables
 CTrade trade;
@@ -81,14 +94,14 @@ bool highLowCalculated = false;
 bool ordersPlaced = false;
 bool isConnected = false;
 bool isSynchronized = false;
-datetime lastSyncTime = 0;
+datetime lastSyncTime = 0;  // Using GMT time
 int syncRetryCount = 0;
 const int MAX_SYNC_RETRIES = 3;
 
 // Cache variables
-datetime lastPositionCountTime = 0;
+datetime lastPositionCountTime = 0;  // Using GMT time
 int cachedTotalPositions = 0;
-datetime lastSpreadCheckTime = 0;
+datetime lastSpreadCheckTime = 0;  // Using GMT time
 int cachedSpread = 0;
 
 // Panel variables
@@ -114,10 +127,59 @@ double totalProfit = 0;
 double totalLots = 0;
 double maxDrawdown = 0;
 
+// Recovery system variables
+struct PositionGroup {
+   datetime openTime;
+   double totalProfit;
+   double totalLots;
+   int positionCount;
+   int cycleNumber;
+};
+
+PositionGroup buyGroups[];
+PositionGroup sellGroups[];
+int currentRecoveryCycle = 0;
+bool recoveryActive = false;
+datetime lastRecoveryCheck = 0;
+
 // Daily trade counters
 int dailyBuyTrades = 0;
 int dailySellTrades = 0;
 datetime lastTradeDate = 0;
+
+// Constants for error handling
+const int MAX_RETRY_ATTEMPTS = 3;
+const int RETRY_DELAY_MS = 1000; // 1 second delay between retries
+
+// Error handling structure
+struct ErrorInfo {
+   int errorCode;
+   string errorMessage;
+   datetime lastErrorTime;
+   int retryCount;
+};
+
+// Global error tracking
+ErrorInfo lastTradeError = {0, "", 0, 0};
+ErrorInfo lastOrderError = {0, "", 0, 0};
+ErrorInfo lastModifyError = {0, "", 0, 0};
+
+//+------------------------------------------------------------------+
+//| Logging function                                                   |
+//+------------------------------------------------------------------+
+void Log(string eventType, string details) {
+   string account = AccountInfoString(ACCOUNT_NAME);
+   string symbol = Symbol();
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double profit = AccountInfoDouble(ACCOUNT_PROFIT);
+   int spread = (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
+   
+   // Format: Account|Symbol|Event|Details|Balance|Equity|Profit|Spread
+   PrintFormat("%s|%s|%s|%s|%.2f|%.2f|%.2f|%d", 
+               account, symbol, eventType, details, 
+               balance, equity, profit, spread);
+}
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                      |
@@ -289,7 +351,7 @@ int OnInit() {
 bool IsSynchronized() {
    if(TerminalInfoInteger(TERMINAL_CONNECTED)) {
       isSynchronized = true;
-      lastSyncTime = TimeCurrent();
+      lastSyncTime = TimeGMT();  // Using GMT time
       syncRetryCount = 0;
       return true;
    }
@@ -318,9 +380,9 @@ void OnDeinit(const int reason) {
 //| Get cached total positions count                                   |
 //+------------------------------------------------------------------+
 int GetCachedTotalPositions() {
-   if(TimeCurrent() - lastPositionCountTime > 1) { // Update cache every second
+   if(TimeGMT() - lastPositionCountTime > 1) { // Update cache every second using GMT time
       cachedTotalPositions = CountTotalOpenPositions();
-      lastPositionCountTime = TimeCurrent();
+      lastPositionCountTime = TimeGMT();
    }
    return cachedTotalPositions;
 }
@@ -329,9 +391,9 @@ int GetCachedTotalPositions() {
 //| Get cached spread                                                  |
 //+------------------------------------------------------------------+
 int GetCachedSpread() {
-   if(TimeCurrent() - lastSpreadCheckTime > 1) { // Update cache every second
+   if(TimeGMT() - lastSpreadCheckTime > 1) { // Update cache every second using GMT time
       cachedSpread = (int)SymbolInfoInteger("GBPUSD", SYMBOL_SPREAD);
-      lastSpreadCheckTime = TimeCurrent();
+      lastSpreadCheckTime = TimeGMT();
    }
    return cachedSpread;
 }
@@ -343,17 +405,17 @@ void OnTick() {
    // Check connection
    if(!TerminalInfoInteger(TERMINAL_CONNECTED)) {
       isConnected = false;
-      Print("Connection lost!");
+      Log("CONNECTION", "Connection lost");
       return;
    }
    
    if(!isConnected) {
       isConnected = true;
-      Print("Connection restored!");
+      Log("CONNECTION", "Connection restored");
    }
    
    // Check synchronization periodically
-   if(TimeCurrent() - lastSyncTime > 60) {
+   if(TimeGMT() - lastSyncTime > 60) {  // Using GMT time
       isSynchronized = IsSynchronized();
    }
    
@@ -369,7 +431,7 @@ void OnTick() {
    // Check and update daily highs and lows
    UpdateDailyHighLow();
    
-   // Place pending orders at 11:00
+   // Place pending orders at 11:00 GMT
    PlacePendingOrders();
    
    // Manage pending orders
@@ -386,9 +448,9 @@ void OnTick() {
 //+------------------------------------------------------------------+
 void UpdateDailyHighLow() {
    MqlDateTime currentTime;
-   TimeToStruct(TimeCurrent(), currentTime);
+   TimeToStruct(TimeGMT(), currentTime);  // Using GMT time
    
-   // Check if we are in the calculation period
+   // Check if we are in the calculation period (GMT)
    int currentMinutes = currentTime.hour * 60 + currentTime.min;
    int startMinutes = HighLowStartHour * 60 + HighLowStartMinute;
    int endMinutes = HighLowEndHour * 60 + HighLowEndMinute;
@@ -401,7 +463,7 @@ void UpdateDailyHighLow() {
       dailyLow = 0;
       ObjectDelete(0, "DailyHigh");
       ObjectDelete(0, "DailyLow");
-      Print("Resetting High/Low calculation at ", TimeToString(TimeCurrent()));
+      Log("RESET", "Resetting High/Low calculation at " + TimeToString(TimeGMT()));
    }
    
    // Calculate High/Low during the specified period
@@ -417,11 +479,11 @@ void UpdateDailyHighLow() {
             // Update daily high/low if needed
             if(rates[0].high > dailyHigh) {
                dailyHigh = rates[0].high;
-               Print("New High found: ", dailyHigh, " at ", TimeToString(rates[0].time));
+               Log("NEW", "New High found: " + DoubleToString(dailyHigh, 5) + " at " + TimeToString(rates[0].time));
             }
             if(rates[0].low < dailyLow) {
                dailyLow = rates[0].low;
-               Print("New Low found: ", dailyLow, " at ", TimeToString(rates[0].time));
+               Log("NEW", "New Low found: " + DoubleToString(dailyLow, 5) + " at " + TimeToString(rates[0].time));
             }
             
             // Update line positions
@@ -430,16 +492,16 @@ void UpdateDailyHighLow() {
                ObjectDelete(0, "DailyHigh");
                ObjectDelete(0, "DailyLow");
                
-               // Get start and end times for the current day
+               // Get start and end times for the current day (GMT)
                MqlDateTime startTime;
-               TimeToStruct(TimeCurrent(), startTime);
+               TimeToStruct(TimeGMT(), startTime);
                startTime.hour = HighLowStartHour;
                startTime.min = HighLowStartMinute;
                startTime.sec = 0;
                datetime start = StructToTime(startTime);
                
                MqlDateTime endTime;
-               TimeToStruct(TimeCurrent(), endTime);
+               TimeToStruct(TimeGMT(), endTime);
                endTime.hour = HighLowEndHour;
                endTime.min = HighLowEndMinute;
                endTime.sec = 0;
@@ -468,12 +530,12 @@ void UpdateDailyHighLow() {
          }
       }
    }
-   // Delete lines at close time
+   // Delete lines at close time (GMT)
    else if(currentMinutes == closeMinutes) {
       highLowCalculated = false;
       ObjectDelete(0, "DailyHigh");
       ObjectDelete(0, "DailyLow");
-      Print("Deleting High/Low lines at close time: ", TimeToString(TimeCurrent()));
+      Log("DELETE", "Deleting High/Low lines at close time: " + TimeToString(TimeGMT()));
    }
 }
 
@@ -486,14 +548,14 @@ void CalculateDailyHighLow() {
    
    // Get data from the start of the period
    MqlDateTime startTime;
-   TimeToStruct(TimeCurrent(), startTime);
+   TimeToStruct(TimeGMT(), startTime);
    startTime.hour = HighLowStartHour;
    startTime.min = HighLowStartMinute;
    startTime.sec = 0;
    datetime start = StructToTime(startTime);
    
    MqlDateTime endTime;
-   TimeToStruct(TimeCurrent(), endTime);
+   TimeToStruct(TimeGMT(), endTime);
    endTime.hour = HighLowEndHour;
    endTime.min = HighLowEndMinute;
    endTime.sec = 0;
@@ -505,22 +567,34 @@ void CalculateDailyHighLow() {
       dailyHigh = rates[0].high;
       dailyLow = rates[0].low;
       
-      Print("Starting High/Low calculation from ", TimeToString(start), " to ", TimeToString(end));
-      Print("First bar - High: ", rates[0].high, " Low: ", rates[0].low, " Open: ", rates[0].open, " Close: ", rates[0].close, " Time: ", TimeToString(rates[0].time));
+      Log("START", "Starting High/Low calculation from " + TimeToString(start) + " to " + TimeToString(end));
+      Log("FIRST", "First bar - High: " + DoubleToString(rates[0].high, 5) + 
+          " Low: " + DoubleToString(rates[0].low, 5) + 
+          " Open: " + DoubleToString(rates[0].open, 5) + 
+          " Close: " + DoubleToString(rates[0].close, 5) + 
+          " Time: " + TimeToString(rates[0].time));
       
       // Find true high and low including wicks
       for(int i = 1; i < ArraySize(rates); i++) {
          if(rates[i].high > dailyHigh) {
             dailyHigh = rates[i].high;
-            Print("New High found at ", TimeToString(rates[i].time), ": ", dailyHigh, " (Bar High: ", rates[i].high, " Open: ", rates[i].open, " Close: ", rates[i].close, ")");
+            Log("NEW", "New High found at " + TimeToString(rates[i].time) + 
+                ": " + DoubleToString(dailyHigh, 5) + 
+                " (Bar High: " + DoubleToString(rates[i].high, 5) + 
+                " Open: " + DoubleToString(rates[i].open, 5) + 
+                " Close: " + DoubleToString(rates[i].close, 5) + ")");
          }
          if(rates[i].low < dailyLow) {
             dailyLow = rates[i].low;
-            Print("New Low found at ", TimeToString(rates[i].time), ": ", dailyLow, " (Bar Low: ", rates[i].low, " Open: ", rates[i].open, " Close: ", rates[i].close, ")");
+            Log("NEW", "New Low found at " + TimeToString(rates[i].time) + 
+                ": " + DoubleToString(dailyLow, 5) + 
+                " (Bar Low: " + DoubleToString(rates[i].low, 5) + 
+                " Open: " + DoubleToString(rates[i].open, 5) + 
+                " Close: " + DoubleToString(rates[i].close, 5) + ")");
          }
       }
       
-      Print("Final Daily High: ", dailyHigh, " Low: ", dailyLow);
+      Log("FINAL", "Final Daily High: " + DoubleToString(dailyHigh, 5) + " Low: " + DoubleToString(dailyLow, 5));
       
       // Draw lines if enabled
       if(ShowHighLowLine) {
@@ -548,10 +622,10 @@ void CalculateDailyHighLow() {
          ObjectSetInteger(0, "DailyLow", OBJPROP_HIDDEN, false);
          ObjectSetString(0, "DailyLow", OBJPROP_TEXT, "Daily Low");
          
-         Print("High/Low lines drawn from ", TimeToString(start), " to ", TimeToString(end));
+         Log("DRAW", "High/Low lines drawn from " + TimeToString(start) + " to " + TimeToString(end));
       }
    } else {
-      Print("Failed to copy rates for High/Low calculation. Error: ", GetLastError());
+      Log("ERROR", "Failed to copy rates for High/Low calculation. Error: " + IntegerToString(GetLastError()));
    }
 }
 
@@ -576,17 +650,17 @@ int CountTotalOpenPositions() {
 //+------------------------------------------------------------------+
 void PlacePendingOrders() {
    MqlDateTime currentTime;
-   TimeToStruct(TimeCurrent(), currentTime);
+   TimeToStruct(TimeGMT(), currentTime);  // Using GMT time
    
-   // Reset daily trade counters and ordersPlaced flag at midnight
+   // Reset daily trade counters and ordersPlaced flag at midnight GMT
    if(lastTradeDate != currentTime.day) {
       dailyBuyTrades = 0;
       dailySellTrades = 0;
-      ordersPlaced = false;  // Reset the flag at midnight
+      ordersPlaced = false;  // Reset the flag at midnight GMT
       lastTradeDate = currentTime.day;
    }
    
-   // Check if it's time to place orders
+   // Check if it's time to place orders (GMT)
    if(currentTime.hour == HighLowEndHour && currentTime.min == HighLowEndMinute && !ordersPlaced) {
       // Delete existing orders
       DeleteAllPendingOrders();
@@ -594,71 +668,141 @@ void PlacePendingOrders() {
       // Check total open positions using cache
       int totalPositions = GetCachedTotalPositions();
       if(totalPositions >= MaxTotalEntries) {
-         Print("Maximum total entries reached: ", totalPositions);
+         Log("MAX", "Maximum total entries reached: " + IntegerToString(totalPositions));
          return;
       }
       
-      // Calculate prices for Buy Stop orders
-      if(TradeDirection == TRADE_BUY || TradeDirection == TRADE_BOTH) {
-         if(dailyBuyTrades >= MaxDailyBuyTrades) {
-            Print("Maximum daily buy trades reached: ", dailyBuyTrades);
-            return;
-         }
-         
-         double buyStopPrice = dailyHigh + BufferDistance * Point();
-         double lotSize = CalculateLotSize();
-         int buyPositions = CountOpenPositions(ORDER_TYPE_BUY);
-         
-         for(int i = 0; i < BuyStopOrders; i++) {
-            if(buyPositions < MaxBuyEntries && totalPositions < MaxTotalEntries) {
-               double tp = Stealth ? 0 : buyStopPrice + TakeProfit * Point();
-               double sl = Stealth ? 0 : buyStopPrice - StopLoss * Point();
+      // Calculate base prices for orders
+      double buyStopPrice = dailyHigh + BufferDistance * Point();
+      double sellStopPrice = dailyLow - BufferDistance * Point();
+      
+      // Check for positions from previous day to activate recovery
+      datetime today = TimeGMT() - (TimeGMT() % 86400); // Today at midnight GMT
+      bool hasPreviousDayPositions = false;
+      
+      for(int i = 0; i < PositionsTotal(); i++) {
+         if(PositionSelectByTicket(PositionGetTicket(i))) {
+            if(PositionGetString(POSITION_SYMBOL) == "GBPUSD" && 
+               PositionGetInteger(POSITION_MAGIC) == Magic) {
+               datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
+               datetime positionDate = positionTime - (positionTime % 86400); // Position date at midnight GMT
                
-               if(!trade.BuyStop(lotSize, buyStopPrice, "GBPUSD", sl, tp, 
-                               ORDER_TIME_SPECIFIED, TimeCurrent() + 9 * 3600, Comments)) {
-                  Print("Failed to place Buy Stop order. Error: ", GetLastError());
-               } else {
-                  dailyBuyTrades++;
+               if(positionDate < today) {
+                  hasPreviousDayPositions = true;
+                  Log("RECOVERY", "Found position from previous day - activating recovery");
+                  break;
                }
-               buyPositions++;
-               totalPositions++;
             }
          }
       }
       
-      // Calculate prices for Sell Stop orders
-      if(TradeDirection == TRADE_SELL || TradeDirection == TRADE_BOTH) {
-         if(dailySellTrades >= MaxDailySellTrades) {
-            Print("Maximum daily sell trades reached: ", dailySellTrades);
-            return;
+      // Activate recovery if needed
+      if(hasPreviousDayPositions && !recoveryActive) {
+         if(currentRecoveryCycle < RecoveryMaxCycle) {
+            recoveryActive = true;
+            currentRecoveryCycle++;
+            Log("RECOVERY", "Recovery system activated. Current cycle: " + IntegerToString(currentRecoveryCycle));
+         } else {
+            Log("RECOVERY", "Cannot activate recovery - max cycles reached (" + IntegerToString(currentRecoveryCycle) + "/" + IntegerToString(RecoveryMaxCycle) + ")");
+         }
+      }
+      
+      // If recovery is active, only place recovery trades
+      if(recoveryActive) {
+         Log("RECOVERY", "Recovery system active - Placing recovery trades only");
+         double recoveryLotSize = CalculateRecoveryLotSize(CalculateLotSize(), currentRecoveryCycle);
+         
+         // Place recovery trades
+         if(TradeDirection == TRADE_BUY || TradeDirection == TRADE_BOTH) {
+            if(dailyBuyTrades < MaxDailyBuyTrades) {
+               int buyPositions = CountOpenPositions(ORDER_TYPE_BUY);
+               if(buyPositions < MaxBuyEntries && totalPositions < MaxTotalEntries) {
+                  // Place multiple buy stop orders
+                  for(int i = 0; i < BuyStopOrders; i++) {
+                     double tp = Stealth ? 0 : buyStopPrice + (TakeProfit * RecoveryTPTRBEMultiplier) * Point();
+                     double sl = Stealth ? 0 : buyStopPrice - StopLoss * Point();
+                     
+                     if(!PlaceOrderWithRetry(ORDER_TYPE_BUY_STOP, recoveryLotSize, buyStopPrice, sl, tp, Comments + " [RECOVERY]")) {
+                        Log("ERROR", "Failed to place Recovery Buy Stop order " + IntegerToString(i+1) + " of " + IntegerToString(BuyStopOrders) + " after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
+                     } else {
+                        dailyBuyTrades++;
+                        Log("PLACED", "Placed Recovery Buy Stop order " + IntegerToString(i+1) + " of " + IntegerToString(BuyStopOrders) + " at price: " + DoubleToString(buyStopPrice, 5));
+                     }
+                  }
+               }
+            }
          }
          
-         double sellStopPrice = dailyLow - BufferDistance * Point();
-         double lotSize = CalculateLotSize();
-         int sellPositions = CountOpenPositions(ORDER_TYPE_SELL);
-         
-         for(int i = 0; i < SellStopOrders; i++) {
-            if(sellPositions < MaxSellEntries && totalPositions < MaxTotalEntries) {
-               double tp = Stealth ? 0 : sellStopPrice - TakeProfit * Point();
-               double sl = Stealth ? 0 : sellStopPrice + StopLoss * Point();
-               
-               if(!trade.SellStop(lotSize, sellStopPrice, "GBPUSD", sl, tp, 
-                                ORDER_TIME_SPECIFIED, TimeCurrent() + 9 * 3600, Comments)) {
-                  Print("Failed to place Sell Stop order. Error: ", GetLastError());
-               } else {
-                  dailySellTrades++;
+         if(TradeDirection == TRADE_SELL || TradeDirection == TRADE_BOTH) {
+            if(dailySellTrades < MaxDailySellTrades) {
+               int sellPositions = CountOpenPositions(ORDER_TYPE_SELL);
+               if(sellPositions < MaxSellEntries && totalPositions < MaxTotalEntries) {
+                  // Place multiple sell stop orders
+                  for(int i = 0; i < SellStopOrders; i++) {
+                     double tp = Stealth ? 0 : sellStopPrice - (TakeProfit * RecoveryTPTRBEMultiplier) * Point();
+                     double sl = Stealth ? 0 : sellStopPrice + StopLoss * Point();
+                     
+                     if(!PlaceOrderWithRetry(ORDER_TYPE_SELL_STOP, recoveryLotSize, sellStopPrice, sl, tp, Comments + " [RECOVERY]")) {
+                        Log("ERROR", "Failed to place Recovery Sell Stop order " + IntegerToString(i+1) + " of " + IntegerToString(SellStopOrders) + " after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
+                     } else {
+                        dailySellTrades++;
+                        Log("PLACED", "Placed Recovery Sell Stop order " + IntegerToString(i+1) + " of " + IntegerToString(SellStopOrders) + " at price: " + DoubleToString(sellStopPrice, 5));
+                     }
+                  }
                }
-               sellPositions++;
-               totalPositions++;
+            }
+         }
+      } else {
+         // Place normal trades
+         Log("NORMAL", "Placing normal trades");
+         double lotSize = CalculateLotSize();
+         
+         if(TradeDirection == TRADE_BUY || TradeDirection == TRADE_BOTH) {
+            if(dailyBuyTrades < MaxDailyBuyTrades) {
+               int buyPositions = CountOpenPositions(ORDER_TYPE_BUY);
+               if(buyPositions < MaxBuyEntries && totalPositions < MaxTotalEntries) {
+                  // Place multiple buy stop orders
+                  for(int i = 0; i < BuyStopOrders; i++) {
+                     double tp = Stealth ? 0 : buyStopPrice + TakeProfit * Point();
+                     double sl = Stealth ? 0 : buyStopPrice - StopLoss * Point();
+                     
+                     if(!PlaceOrderWithRetry(ORDER_TYPE_BUY_STOP, lotSize, buyStopPrice, sl, tp, Comments)) {
+                        Log("ERROR", "Failed to place Buy Stop order " + IntegerToString(i+1) + " of " + IntegerToString(BuyStopOrders) + " after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
+                     } else {
+                        dailyBuyTrades++;
+                        Log("PLACED", "Placed Buy Stop order " + IntegerToString(i+1) + " of " + IntegerToString(BuyStopOrders) + " at price: " + DoubleToString(buyStopPrice, 5));
+                     }
+                  }
+               }
+            }
+         }
+         
+         if(TradeDirection == TRADE_SELL || TradeDirection == TRADE_BOTH) {
+            if(dailySellTrades < MaxDailySellTrades) {
+               int sellPositions = CountOpenPositions(ORDER_TYPE_SELL);
+               if(sellPositions < MaxSellEntries && totalPositions < MaxTotalEntries) {
+                  // Place multiple sell stop orders
+                  for(int i = 0; i < SellStopOrders; i++) {
+                     double tp = Stealth ? 0 : sellStopPrice - TakeProfit * Point();
+                     double sl = Stealth ? 0 : sellStopPrice + StopLoss * Point();
+                     
+                     if(!PlaceOrderWithRetry(ORDER_TYPE_SELL_STOP, lotSize, sellStopPrice, sl, tp, Comments)) {
+                        Log("ERROR", "Failed to place Sell Stop order " + IntegerToString(i+1) + " of " + IntegerToString(SellStopOrders) + " after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
+                     } else {
+                        dailySellTrades++;
+                        Log("PLACED", "Placed Sell Stop order " + IntegerToString(i+1) + " of " + IntegerToString(SellStopOrders) + " at price: " + DoubleToString(sellStopPrice, 5));
+                     }
+                  }
+               }
             }
          }
       }
       
       ordersPlaced = true;
-      Print("Orders placed successfully. Total positions: ", totalPositions);
+      Log("SUCCESS", "Orders placed successfully. Total positions: " + IntegerToString(totalPositions));
    }
    
-   // Reset flag at midnight
+   // Reset flag at midnight GMT
    if(currentTime.hour == 0 && currentTime.min == 0) {
       ordersPlaced = false;
    }
@@ -681,6 +825,32 @@ double CalculateLotSize() {
    }
    
    return FixedLot;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate recovery lot size                                        |
+//+------------------------------------------------------------------+
+double CalculateRecoveryLotSize(double baseLot, int cycleNumber) {
+   double lotSize = baseLot;
+   
+   if(RecoveryLotSizeMethod == "Multiplier") {
+      lotSize = baseLot * MathPow(RecoveryLotSizeMultiplier, cycleNumber);
+   }
+   else if(RecoveryLotSizeMethod == "Increment") {
+      lotSize = baseLot + (RecoveryLotSizeIncrement * cycleNumber);
+   }
+   else if(RecoveryLotSizeMethod == "Fixed Size") {
+      lotSize = RecoveryFixedLotSize;
+   }
+   
+   // Ensure lot size doesn't exceed maximum allowed
+   lotSize = MathMin(lotSize, MaximumLotSizeAllowed);
+   
+   // Normalize to valid lot step
+   double lotStep = SymbolInfoDouble("GBPUSD", SYMBOL_VOLUME_STEP);
+   lotSize = MathFloor(lotSize / lotStep) * lotStep;
+   
+   return MathMax(lotSize, SymbolInfoDouble("GBPUSD", SYMBOL_VOLUME_MIN));
 }
 
 //+------------------------------------------------------------------+
@@ -712,7 +882,11 @@ void DeleteAllPendingOrders(ENUM_ORDER_TYPE orderType = WRONG_VALUE) {
             if(orderType == WRONG_VALUE || OrderGetInteger(ORDER_TYPE) == orderType) {
                if(OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_BUY_STOP || 
                   OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_SELL_STOP) {
-                  trade.OrderDelete(ticket);
+                  if(trade.OrderDelete(ticket)) {
+                     Log("DELETE", "Deleted pending order. Ticket: " + IntegerToString(ticket));
+                  } else {
+                     Log("ERROR", "Failed to delete pending order. Error: " + IntegerToString(GetLastError()));
+                  }
                }
             }
          }
@@ -724,17 +898,35 @@ void DeleteAllPendingOrders(ENUM_ORDER_TYPE orderType = WRONG_VALUE) {
 //| Manage open positions                                              |
 //+------------------------------------------------------------------+
 void ManageOpenPositions() {
+   // Compter les positions ouvertes par direction
+   int buyPositions = 0;
+   int sellPositions = 0;
+   datetime today = TimeGMT() - (TimeGMT() % 86400); // Date actuelle à minuit GMT
+   
    for(int i = 0; i < PositionsTotal(); i++) {
       if(PositionSelectByTicket(PositionGetTicket(i))) {
          if(PositionGetString(POSITION_SYMBOL) == "GBPUSD" && 
             PositionGetInteger(POSITION_MAGIC) == Magic) {
+            
+            ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+            datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
+            datetime positionDate = positionTime - (positionTime % 86400); // Date de la position à minuit GMT
+            string comment = PositionGetString(POSITION_COMMENT);
+            bool isRecovery = StringFind(comment, "[RECOVERY]") != -1;
+            
+            if(positionDate == today) { // Vérifier si la position a été ouverte aujourd'hui
+               if(posType == POSITION_TYPE_BUY) {
+                  buyPositions++;
+               } else if(posType == POSITION_TYPE_SELL) {
+                  sellPositions++;
+               }
+            }
             
             ulong ticket = PositionGetTicket(i);
             double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
             double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
             double sl = PositionGetDouble(POSITION_SL);
             double tp = PositionGetDouble(POSITION_TP);
-            ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
             
             // Manage BreakEven
             if(EnableBreakEven) {
@@ -746,23 +938,29 @@ void ManageOpenPositions() {
                }
                
                // Check if we should activate BreakEven
-               if(profitInPoints >= BreakEvenStart) {
+               double breakEvenStart = isRecovery ? BreakEvenStart * RecoveryTPTRBEMultiplier : BreakEvenStart;
+               double breakEvenLevel = isRecovery ? BreakEvenLevel * RecoveryTPTRBEMultiplier : BreakEvenLevel;
+               
+               if(profitInPoints >= breakEvenStart) {
                   double newSL = 0;
                   
                   // Calculate BreakEven level based on position type
                   if(posType == POSITION_TYPE_BUY) {
-                     newSL = openPrice + BreakEvenLevel * Point();
+                     newSL = openPrice + breakEvenLevel * Point();
                   } else {
-                     newSL = openPrice - BreakEvenLevel * Point();
+                     newSL = openPrice - breakEvenLevel * Point();
                   }
                   
                   // Only modify if the new SL is more favorable than current SL
                   if((posType == POSITION_TYPE_BUY && newSL > sl) || 
                      (posType == POSITION_TYPE_SELL && (newSL < sl || sl == 0))) {
-                     if(!trade.PositionModify(ticket, newSL, tp)) {
-                        Print("Failed to modify position for BreakEven. Error: ", GetLastError());
+                     if(!ModifyPositionWithRetry(ticket, newSL, tp)) {
+                        Log("ERROR", "Failed to modify position for BreakEven after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
                      } else {
-                        Print("BreakEven activated - Old SL: ", sl, " New SL: ", newSL, " Profit in points: ", profitInPoints);
+                        Log("MODIFY", "BreakEven activated - Old SL: " + DoubleToString(sl, 5) + 
+                            " New SL: " + DoubleToString(newSL, 5) + 
+                            " Profit in points: " + DoubleToString(profitInPoints, 2) + 
+                            " Type: " + (isRecovery ? "Recovery" : "Normal"));
                      }
                   }
                }
@@ -778,40 +976,289 @@ void ManageOpenPositions() {
                }
                
                // Trailing Stop activates when profit reaches TrailingStopStart
-               if(profitInPoints >= TrailingStopStart) {
+               double trailingStart = isRecovery ? TrailingStopStart * RecoveryTPTRBEMultiplier : TrailingStopStart;
+               double trailingLevel = isRecovery ? TrailingStopLevel * RecoveryTPTRBEMultiplier : TrailingStopLevel;
+               
+               if(profitInPoints >= trailingStart) {
                   double newSL = 0;
                   
                   if(posType == POSITION_TYPE_BUY) {
                      // Calculate new SL based on current price
-                     newSL = currentPrice - TrailingStopLevel * Point();
+                     newSL = currentPrice - trailingLevel * Point();
                      // Only move SL if it's more favorable than current SL
                      if(newSL > sl) {
-                        if(!trade.PositionModify(ticket, newSL, tp)) {
-                           Print("Failed to modify position for Trailing Stop. Error: ", GetLastError());
+                        if(!ModifyPositionWithRetry(ticket, newSL, tp)) {
+                           Log("ERROR", "Failed to modify position for Trailing Stop after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
                         } else {
-                           Print("Trailing Stop updated - Old SL: ", sl, " New SL: ", newSL, " Current Price: ", currentPrice);
+                           Log("MODIFY", "Trailing Stop updated - Old SL: " + DoubleToString(sl, 5) + 
+                               " New SL: " + DoubleToString(newSL, 5) + 
+                               " Current Price: " + DoubleToString(currentPrice, 5) + 
+                               " Type: " + (isRecovery ? "Recovery" : "Normal"));
                         }
                      }
                   } else {
                      // Calculate new SL based on current price
-                     newSL = currentPrice + TrailingStopLevel * Point();
+                     newSL = currentPrice + trailingLevel * Point();
                      // Only move SL if it's more favorable than current SL
                      if(newSL < sl || sl == 0) {
-                        if(!trade.PositionModify(ticket, newSL, tp)) {
-                           Print("Failed to modify position for Trailing Stop. Error: ", GetLastError());
+                        if(!ModifyPositionWithRetry(ticket, newSL, tp)) {
+                           Log("ERROR", "Failed to modify position for Trailing Stop after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
                         } else {
-                           Print("Trailing Stop updated - Old SL: ", sl, " New SL: ", newSL, " Current Price: ", currentPrice);
+                           Log("MODIFY", "Trailing Stop updated - Old SL: " + DoubleToString(sl, 5) + 
+                               " New SL: " + DoubleToString(newSL, 5) + 
+                               " Current Price: " + DoubleToString(currentPrice, 5) + 
+                               " Type: " + (isRecovery ? "Recovery" : "Normal"));
                         }
                      }
                   }
                }
             }
+         }
+      }
+   }
+   
+   // Vérifier si une direction est complètement activée et supprimer les ordres opposés
+   if(buyPositions >= BuyStopOrders) {
+      Log("RECOVERY", "All buy positions activated (" + IntegerToString(buyPositions) + 
+          "/" + IntegerToString(BuyStopOrders) + 
+          "). Deleting all sell stop orders.");
+      DeleteAllPendingOrders(ORDER_TYPE_SELL_STOP);
+   }
+   
+   if(sellPositions >= SellStopOrders) {
+      Log("RECOVERY", "All sell positions activated (" + IntegerToString(sellPositions) + 
+          "/" + IntegerToString(SellStopOrders) + 
+          "). Deleting all buy stop orders.");
+      DeleteAllPendingOrders(ORDER_TYPE_BUY_STOP);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Manage recovery system                                             |
+//+------------------------------------------------------------------+
+void ManageRecoverySystem() {
+   if(!EnableRecovery) {
+      Log("RECOVERY", "Recovery system disabled in settings");
+      return;
+   }
+   
+   // Check if we need to update recovery status
+   if(TimeGMT() - lastRecoveryCheck < 60) return; // Check every minute
+   lastRecoveryCheck = TimeGMT();
+   
+   // Check if recovery should be activated
+   bool shouldActivateRecovery = false;
+   if(EnableMinDrawdownForRecovery) {
+      double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double drawdownPercent = ((currentBalance - currentEquity) / currentBalance) * 100;
+      shouldActivateRecovery = drawdownPercent >= MinDrawdownPercentForRecovery;
+      Log("RECOVERY", "Checking drawdown: Current=" + DoubleToString(drawdownPercent, 2) + 
+          "% Required=" + DoubleToString(MinDrawdownPercentForRecovery, 2) + "%");
+   } else {
+      // Check if there are any open positions from previous days
+      Log("RECOVERY", "Checking positions for previous day condition...");
+      MqlDateTime currentTime;
+      TimeToStruct(TimeGMT(), currentTime);
+      datetime today = TimeGMT() - (TimeGMT() % 86400); // Today at midnight GMT
+      
+      for(int i = 0; i < PositionsTotal(); i++) {
+         if(PositionSelectByTicket(PositionGetTicket(i))) {
+            if(PositionGetString(POSITION_SYMBOL) == "GBPUSD" && 
+               PositionGetInteger(POSITION_MAGIC) == Magic) {
+               datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
+               datetime positionDate = positionTime - (positionTime % 86400); // Position date at midnight GMT
+               
+               Log("RECOVERY", "Position time: " + TimeToString(positionTime) + 
+                   " (" + TimeToString(positionDate) + ")");
+               Log("RECOVERY", "Today: " + TimeToString(today) + " (" + TimeToString(today) + ")");
+               
+               if(positionDate < today) {
+                  shouldActivateRecovery = true;
+                  Log("RECOVERY", "Found position from previous day - activating recovery");
+                  break;
+               }
+            }
+         }
+      }
+   }
+   
+   if(shouldActivateRecovery) {
+      if(!recoveryActive) {
+         if(currentRecoveryCycle < RecoveryMaxCycle) {
+            recoveryActive = true;
+            currentRecoveryCycle++;
+            Log("RECOVERY", "Recovery system activated. Current cycle: " + IntegerToString(currentRecoveryCycle));
+         } else {
+            Log("RECOVERY", "Cannot activate recovery - max cycles reached (" + IntegerToString(currentRecoveryCycle) + "/" + IntegerToString(RecoveryMaxCycle) + ")");
+         }
+      } else {
+         Log("RECOVERY", "Recovery already active");
+      }
+   } else {
+      Log("RECOVERY", "No conditions met for recovery activation");
+   }
+   
+   // Update position groups
+   UpdatePositionGroups();
+   
+   // Check for recovery opportunities
+   if(recoveryActive) {
+      CheckRecoveryOpportunities();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Update position groups                                             |
+//+------------------------------------------------------------------+
+void UpdatePositionGroups() {
+   // Clear existing groups
+   ArrayResize(buyGroups, 0);
+   ArrayResize(sellGroups, 0);
+   
+   // Group positions by type and cycle
+   for(int i = 0; i < PositionsTotal(); i++) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetString(POSITION_SYMBOL) == "GBPUSD" && 
+            PositionGetInteger(POSITION_MAGIC) == Magic) {
             
-            // Close opposite orders if an order is triggered
+            ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+            datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+            double profit = PositionGetDouble(POSITION_PROFIT);
+            double lots = PositionGetDouble(POSITION_VOLUME);
+            
+            // Find or create group
+            PositionGroup group;
+            group.openTime = openTime;
+            group.totalProfit = profit;
+            group.totalLots = lots;
+            group.positionCount = 1;
+            group.cycleNumber = 0; // Will be updated based on time
+            
             if(posType == POSITION_TYPE_BUY) {
-               DeleteAllPendingOrders(ORDER_TYPE_SELL_STOP);
-            } else if(posType == POSITION_TYPE_SELL) {
-               DeleteAllPendingOrders(ORDER_TYPE_BUY_STOP);
+               int size = ArraySize(buyGroups);
+               ArrayResize(buyGroups, size + 1);
+               buyGroups[size] = group;
+            } else {
+               int size = ArraySize(sellGroups);
+               ArrayResize(sellGroups, size + 1);
+               sellGroups[size] = group;
+            }
+         }
+      }
+   }
+   
+   // Sort groups by time
+   SortPositionGroups(buyGroups);
+   SortPositionGroups(sellGroups);
+   
+   // Assign cycle numbers
+   for(int i = 0; i < ArraySize(buyGroups); i++) {
+      buyGroups[i].cycleNumber = i;
+   }
+   for(int i = 0; i < ArraySize(sellGroups); i++) {
+      sellGroups[i].cycleNumber = i;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Sort position groups by time                                       |
+//+------------------------------------------------------------------+
+void SortPositionGroups(PositionGroup &groups[]) {
+   for(int i = 0; i < ArraySize(groups) - 1; i++) {
+      for(int j = i + 1; j < ArraySize(groups); j++) {
+         if(groups[i].openTime > groups[j].openTime) {
+            PositionGroup temp = groups[i];
+            groups[i] = groups[j];
+            groups[j] = temp;
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check recovery opportunities                                       |
+//+------------------------------------------------------------------+
+void CheckRecoveryOpportunities() {
+   // Vérifier si toutes les positions de recovery d'un même jour sont fermées en profit
+   bool allRecoveryPositionsClosedInProfit = false;
+   datetime recoveryDay = 0;
+   double totalRecoveryProfit = 0;
+   
+   // Parcourir l'historique des positions fermées pour trouver les positions de recovery
+   HistorySelect(0, TimeCurrent());
+   int totalDeals = HistoryDealsTotal();
+   datetime lastRecoveryCloseTime = 0;
+   
+   // Trouver le jour des dernières positions de recovery fermées
+   for(int i = totalDeals - 1; i >= 0; i--) {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket > 0) {
+         if(HistoryDealGetString(ticket, DEAL_SYMBOL) == "GBPUSD" && 
+            HistoryDealGetInteger(ticket, DEAL_MAGIC) == Magic) {
+            
+            string comment = HistoryDealGetString(ticket, DEAL_COMMENT);
+            if(StringFind(comment, "[RECOVERY]") != -1) {
+               datetime dealTime = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
+               if(recoveryDay == 0) {
+                  recoveryDay = dealTime - (dealTime % 86400); // Date à minuit
+               }
+               
+               if(dealTime - (dealTime % 86400) == recoveryDay) {
+                  double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+                  totalRecoveryProfit += profit;
+                  if(dealTime > lastRecoveryCloseTime) {
+                     lastRecoveryCloseTime = dealTime;
+                  }
+               }
+            }
+         }
+      }
+   }
+   
+   // Vérifier s'il reste des positions de recovery ouvertes pour ce jour
+   bool hasOpenRecoveryPositions = false;
+   for(int i = 0; i < PositionsTotal(); i++) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetString(POSITION_SYMBOL) == "GBPUSD" && 
+            PositionGetInteger(POSITION_MAGIC) == Magic) {
+            
+            string comment = PositionGetString(POSITION_COMMENT);
+            if(StringFind(comment, "[RECOVERY]") != -1) {
+               datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
+               if(positionTime - (positionTime % 86400) == recoveryDay) {
+                  hasOpenRecoveryPositions = true;
+                  break;
+               }
+            }
+         }
+      }
+   }
+   
+   // Si toutes les positions de recovery du jour sont fermées en profit
+   if(recoveryDay > 0 && !hasOpenRecoveryPositions && totalRecoveryProfit > 0) {
+      Log("RECOVERY", "All recovery positions closed in profit for day " + 
+          TimeToString(recoveryDay) + " - Total profit: " + 
+          DoubleToString(totalRecoveryProfit, 2));
+      
+      // Fermer les positions plus anciennes
+      int closed = 0;
+      for(int i = 0; i < PositionsTotal() && closed < 1; i++) {
+         if(PositionSelectByTicket(PositionGetTicket(i))) {
+            if(PositionGetString(POSITION_SYMBOL) == "GBPUSD" && 
+               PositionGetInteger(POSITION_MAGIC) == Magic) {
+               
+               datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
+               if(positionTime < lastRecoveryCloseTime) {
+                  if(trade.PositionClose(PositionGetTicket(i))) {
+                     Log("CLOSE", "Closed position. Ticket: " + IntegerToString(PositionGetTicket(i)) + 
+                         " Profit: " + DoubleToString(PositionGetDouble(POSITION_PROFIT), 2) + 
+                         " Type: " + (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "BUY" : "SELL"));
+                     closed++;
+                  } else {
+                     Log("ERROR", "Failed to close position. Error: " + IntegerToString(GetLastError()));
+                  }
+               }
             }
          }
       }
@@ -823,16 +1270,16 @@ void ManageOpenPositions() {
 //+------------------------------------------------------------------+
 void ManagePendingOrders() {
    MqlDateTime currentTime;
-   TimeToStruct(TimeCurrent(), currentTime);
+   TimeToStruct(TimeGMT(), currentTime);  // Using GMT time
    
-   // Check if we are at or past closing time
+   // Check if we are at or past closing time (GMT)
    int currentMinutes = currentTime.hour * 60 + currentTime.min;
    int closeMinutes = CloseOrdersHour * 60 + CloseOrdersMinute;
    
    if(currentMinutes >= closeMinutes) {
       // Check if we have already closed orders today
       static datetime lastCloseDate = 0;
-      datetime currentDate = TimeCurrent() - (TimeCurrent() % 86400); // Current date at midnight
+      datetime currentDate = TimeGMT() - (TimeGMT() % 86400); // Current date at midnight GMT
       
       if(lastCloseDate != currentDate) {
          // Delete all pending orders
@@ -847,7 +1294,7 @@ void ManagePendingOrders() {
                      if(trade.OrderDelete(ticket)) {
                         ordersDeleted++;
                      } else {
-                        Print("Failed to delete pending order. Error: ", GetLastError());
+                        Log("ERROR", "Failed to delete pending order. Error: " + IntegerToString(GetLastError()));
                      }
                   }
                }
@@ -855,7 +1302,7 @@ void ManagePendingOrders() {
          }
          
          if(ordersDeleted > 0) {
-            Print("Closed ", ordersDeleted, " pending orders at ", TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES));
+            Log("CLOSE", "Closed " + IntegerToString(ordersDeleted) + " pending orders at " + TimeToString(TimeGMT(), TIME_DATE|TIME_MINUTES));
          }
          
          lastCloseDate = currentDate;
@@ -883,7 +1330,7 @@ void CreateTradingPanel() {
    
    // Panel title
    ObjectCreate(0, panelName + "_Title", OBJ_LABEL, 0, 0, 0);
-   ObjectSetString(0, panelName + "_Title", OBJPROP_TEXT, "Trading Panel");
+   ObjectSetString(0, panelName + "_Title", OBJPROP_TEXT, "www.1pair1trade1day.com");
    ObjectSetInteger(0, panelName + "_Title", OBJPROP_XDISTANCE, panelX + 5);
    ObjectSetInteger(0, panelName + "_Title", OBJPROP_YDISTANCE, panelY + 5);
    ObjectSetInteger(0, panelName + "_Title", OBJPROP_COLOR, textColor);
@@ -920,8 +1367,21 @@ void UpdateTradingPanel() {
    double currentDrawdown = (maxEquity - minEquity) / maxEquity * 100;
    if(currentDrawdown > maxDrawdown) maxDrawdown = currentDrawdown;
    
-   // Calculate total profit and lots
-   totalProfit = equity - balance;
+   // Calculate total profit from closed trades
+   double totalClosedProfit = 0;
+   HistorySelect(0, TimeCurrent());
+   int totalDeals = HistoryDealsTotal();
+   for(int i = 0; i < totalDeals; i++) {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket > 0) {
+         if(HistoryDealGetString(ticket, DEAL_SYMBOL) == "GBPUSD" && 
+            HistoryDealGetInteger(ticket, DEAL_MAGIC) == Magic) {
+            totalClosedProfit += HistoryDealGetDouble(ticket, DEAL_PROFIT);
+         }
+      }
+   }
+   
+   // Calculate total lots from open positions
    totalLots = 0;
    for(int i = 0; i < PositionsTotal(); i++) {
       ulong ticket = PositionGetTicket(i);
@@ -941,7 +1401,7 @@ void UpdateTradingPanel() {
    UpdatePanelLine("Balance: " + DoubleToString(balance, 2), line++, yOffset, normalColor);
    UpdatePanelLine("Equity: " + DoubleToString(equity, 2), line++, yOffset, normalColor);
    UpdatePanelLine("Profit: " + DoubleToString(profit, 2), line++, yOffset, profit >= 0 ? profitColor : lossColor);
-   UpdatePanelLine("Total Profit: " + DoubleToString(totalProfit, 2), line++, yOffset, totalProfit >= 0 ? profitColor : lossColor);
+   UpdatePanelLine("Total Profit: " + DoubleToString(totalClosedProfit, 2), line++, yOffset, totalClosedProfit >= 0 ? profitColor : lossColor);
    UpdatePanelLine("Current Drawdown: " + DoubleToString(currentDrawdown, 2) + "%", line++, yOffset, currentDrawdown > 10 ? warningColor : normalColor);
    UpdatePanelLine("Max Drawdown: " + DoubleToString(maxDrawdown, 2) + "%", line++, yOffset, maxDrawdown > 10 ? warningColor : normalColor);
    UpdatePanelLine("Margin: " + DoubleToString(margin, 2), line++, yOffset, normalColor);
@@ -983,6 +1443,15 @@ void UpdateTradingPanel() {
    
    UpdatePanelLine("Pending Orders: " + IntegerToString(pendingOrders), line++, yOffset, normalColor);
    
+   // Recovery System Information
+   UpdatePanelLine("--- Recovery System ---", line++, yOffset, textColor);
+   UpdatePanelLine("Status: " + (recoveryActive ? "Active" : "Inactive"), line++, yOffset, 
+                  recoveryActive ? warningColor : normalColor);
+   UpdatePanelLine("Current Cycle: " + IntegerToString(currentRecoveryCycle) + "/" + IntegerToString(RecoveryMaxCycle), 
+                  line++, yOffset, normalColor);
+   UpdatePanelLine("Lot Size Method: " + RecoveryLotSizeMethod, line++, yOffset, normalColor);
+   UpdatePanelLine("TP/TR/BE Multiplier: " + DoubleToString(RecoveryTPTRBEMultiplier, 1), line++, yOffset, normalColor);
+   
    // Update panel height
    panelHeight = (line + 1) * lineHeight + 40;
    ObjectSetInteger(0, panelName, OBJPROP_YSIZE, panelHeight);
@@ -1012,4 +1481,169 @@ void UpdatePanelLine(string text, int line, int yOffset, color lineColor) {
 //+------------------------------------------------------------------+
 void DeleteTradingPanel() {
    ObjectsDeleteAll(0, panelName);
+}
+
+//+------------------------------------------------------------------+
+//| Handle trade errors with retry logic                               |
+//+------------------------------------------------------------------+
+bool HandleTradeError(int errorCode, string operation) {
+   if(errorCode == 0) return true; // No error
+   
+   string errorMessage = "Error in " + operation + ": " + IntegerToString(errorCode) + " - " + GetLastErrorDescription(errorCode);
+   Print(errorMessage);
+   
+   // Update error tracking
+   lastTradeError.errorCode = errorCode;
+   lastTradeError.errorMessage = errorMessage;
+   lastTradeError.lastErrorTime = TimeGMT();  // Using GMT time
+   lastTradeError.retryCount++;
+   
+   // Check if we should retry
+   if(lastTradeError.retryCount < MAX_RETRY_ATTEMPTS) {
+      Print("Retrying operation in ", RETRY_DELAY_MS, "ms... (Attempt ", lastTradeError.retryCount + 1, " of ", MAX_RETRY_ATTEMPTS, ")");
+      Sleep(RETRY_DELAY_MS);
+      return false;
+   }
+   
+   // Reset retry count after max attempts
+   lastTradeError.retryCount = 0;
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Get detailed error description                                     |
+//+------------------------------------------------------------------+
+string GetLastErrorDescription(int errorCode) {
+   switch(errorCode) {
+      case 1: return "No error returned";
+      case 2: return "Common error";
+      case 3: return "Invalid trade parameters";
+      case 4: return "Trade server is busy";
+      case 5: return "Old version of the client terminal";
+      case 6: return "No connection with trade server";
+      case 7: return "Not enough rights";
+      case 8: return "Too frequent requests";
+      case 9: return "Malfunctional trade operation";
+      case 64: return "Account disabled";
+      case 65: return "Invalid account";
+      case 128: return "Trade timeout";
+      case 129: return "Invalid price";
+      case 130: return "Invalid stops";
+      case 131: return "Invalid trade volume";
+      case 132: return "Market is closed";
+      case 133: return "Trade is disabled";
+      case 134: return "Not enough money";
+      case 135: return "Price changed";
+      case 136: return "Off quotes";
+      case 137: return "Broker is busy";
+      case 138: return "Requote";
+      case 139: return "Order is locked";
+      case 140: return "Long positions only allowed";
+      case 141: return "Too many requests";
+      case 145: return "Modification denied because order is too close to market";
+      case 146: return "Trade context is busy";
+      case 147: return "Expirations are denied by broker";
+      case 148: return "Too many open and pending orders";
+      case 149: return "Hedging is prohibited";
+      case 150: return "Prohibited by FIFO rules";
+      default: return "Unknown error";
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Place order with error handling and retry                          |
+//+------------------------------------------------------------------+
+bool PlaceOrderWithRetry(ENUM_ORDER_TYPE orderType, double volume, double price, double sl, double tp, string comment) {
+   int attempts = 0;
+   bool result = false;
+   
+   while(attempts < MAX_RETRY_ATTEMPTS) {
+      if(orderType == ORDER_TYPE_BUY_STOP) {
+         result = trade.BuyStop(volume, price, "GBPUSD", sl, tp, ORDER_TIME_SPECIFIED, TimeGMT() + 9 * 3600, comment);
+      } else if(orderType == ORDER_TYPE_SELL_STOP) {
+         result = trade.SellStop(volume, price, "GBPUSD", sl, tp, ORDER_TIME_SPECIFIED, TimeGMT() + 9 * 3600, comment);
+      }
+      
+      if(result) {
+         lastTradeError.retryCount = 0; // Reset retry count on success
+         return true;
+      }
+      
+      int errorCode = GetLastError();
+      if(HandleTradeError(errorCode, "PlaceOrder")) {
+         break; // Don't retry if error is not recoverable
+      }
+      
+      attempts++;
+   }
+   
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Modify position with error handling and retry                      |
+//+------------------------------------------------------------------+
+bool ModifyPositionWithRetry(ulong ticket, double sl, double tp) {
+   int attempts = 0;
+   bool result = false;
+   
+   // Vérifier si la position existe
+   if(!PositionSelectByTicket(ticket)) {
+      Log("ERROR", "Position not found. Ticket: " + IntegerToString(ticket));
+      return false;
+   }
+   
+   // Récupérer les valeurs actuelles
+   double currentSL = PositionGetDouble(POSITION_SL);
+   double currentTP = PositionGetDouble(POSITION_TP);
+   
+   // Vérifier si les nouvelles valeurs sont différentes des anciennes
+   if(currentSL == sl && currentTP == tp) {
+      Log("NOCHANGE", "No changes needed - SL and TP are already at desired levels");
+      return true;
+   }
+   
+   while(attempts < MAX_RETRY_ATTEMPTS) {
+      result = trade.PositionModify(ticket, sl, tp);
+      
+      if(result) {
+         lastModifyError.retryCount = 0; // Reset retry count on success
+         return true;
+      }
+      
+      int errorCode = GetLastError();
+      if(HandleTradeError(errorCode, "ModifyPosition")) {
+         break; // Don't retry if error is not recoverable
+      }
+      
+      attempts++;
+   }
+   
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Close position with error handling and retry                       |
+//+------------------------------------------------------------------+
+bool ClosePositionWithRetry(ulong ticket) {
+   int attempts = 0;
+   bool result = false;
+   
+   while(attempts < MAX_RETRY_ATTEMPTS) {
+      result = trade.PositionClose(ticket);
+      
+      if(result) {
+         lastTradeError.retryCount = 0; // Reset retry count on success
+         return true;
+      }
+      
+      int errorCode = GetLastError();
+      if(HandleTradeError(errorCode, "ClosePosition")) {
+         break; // Don't retry if error is not recoverable
+      }
+      
+      attempts++;
+   }
+   
+   return false;
 } 
