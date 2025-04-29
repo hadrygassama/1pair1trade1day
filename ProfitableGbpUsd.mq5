@@ -37,6 +37,7 @@ input int      MaxSellEntries = 25;     // Max Sell Entries
 input int      MaxTotalEntries = 25;    // Max Total Entries
 input int      MaxDailyBuyTrades = 5;   // Max Daily Buy Trades
 input int      MaxDailySellTrades = 5;  // Max Daily Sell Trades
+input bool     DeleteOppositePendingOrders = true;  // Delete opposite pending orders
 input int      BuyStopOrders = 5;       // Buy Stop Orders Qty
 input int      SellStopOrders = 5;      // Sell Stop Orders Qty
 input int      CloseOrdersHour = 20;    // Close Orders Hour
@@ -51,12 +52,9 @@ input int      StopLoss = 5000;         // Stop Loss (points)
 input bool     Stealth = false;         // Hide TP/SL
 
 input group "=== BREAKEVEN & TRAILING ==="
-input bool     EnableBreakEven = true;  // Enable BreakEven
-input int      BreakEvenStart = 100;    // BreakEven Start (points)
-input int      BreakEvenLevel = 80;     // BreakEven Level (points)
 input bool     EnableTrailingStop = true;  // Enable Trailing
-input int      TrailingStopStart = 500;  // Trailing Start (points)
-input int      TrailingStopLevel = 300;  // Trailing Level (points)
+input int      TrailingStopStart = 150;  // Trailing Start (points)
+input int      TrailingStopLevel = 80;  // Trailing Level (points)
 
 input group "=== RECOVERY SYSTEM ==="
 input bool     EnableRecovery = true;   // Enable Recovery
@@ -214,17 +212,6 @@ int OnInit() {
    if(StopLoss <= 0) {
       Print("Error: StopLoss must be positive");
       return INIT_PARAMETERS_INCORRECT;
-   }
-   
-   if(EnableBreakEven) {
-      if(BreakEvenStart <= 0) {
-         Print("Error: BreakEvenStart must be positive");
-         return INIT_PARAMETERS_INCORRECT;
-      }
-      if(BreakEvenLevel <= 0) {
-         Print("Error: BreakEvenLevel must be positive");
-         return INIT_PARAMETERS_INCORRECT;
-      }
    }
    
    if(EnableTrailingStop) {
@@ -928,44 +915,6 @@ void ManageOpenPositions() {
             double sl = PositionGetDouble(POSITION_SL);
             double tp = PositionGetDouble(POSITION_TP);
             
-            // Manage BreakEven
-            if(EnableBreakEven) {
-               double profitInPoints = 0;
-               if(posType == POSITION_TYPE_BUY) {
-                  profitInPoints = (currentPrice - openPrice) / Point();
-               } else {
-                  profitInPoints = (openPrice - currentPrice) / Point();
-               }
-               
-               // Check if we should activate BreakEven
-               double breakEvenStart = isRecovery ? BreakEvenStart * RecoveryTPTRBEMultiplier : BreakEvenStart;
-               double breakEvenLevel = isRecovery ? BreakEvenLevel * RecoveryTPTRBEMultiplier : BreakEvenLevel;
-               
-               if(profitInPoints >= breakEvenStart) {
-                  double newSL = 0;
-                  
-                  // Calculate BreakEven level based on position type
-                  if(posType == POSITION_TYPE_BUY) {
-                     newSL = openPrice + breakEvenLevel * Point();
-                  } else {
-                     newSL = openPrice - breakEvenLevel * Point();
-                  }
-                  
-                  // Only modify if the new SL is more favorable than current SL
-                  if((posType == POSITION_TYPE_BUY && newSL > sl) || 
-                     (posType == POSITION_TYPE_SELL && (newSL < sl || sl == 0))) {
-                     if(!ModifyPositionWithRetry(ticket, newSL, tp)) {
-                        Log("ERROR", "Failed to modify position for BreakEven after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
-                     } else {
-                        Log("MODIFY", "BreakEven activated - Old SL: " + DoubleToString(sl, 5) + 
-                            " New SL: " + DoubleToString(newSL, 5) + 
-                            " Profit in points: " + DoubleToString(profitInPoints, 2) + 
-                            " Type: " + (isRecovery ? "Recovery" : "Normal"));
-                     }
-                  }
-               }
-            }
-            
             // Manage Trailing Stop
             if(EnableTrailingStop) {
                double profitInPoints = 0;
@@ -1018,18 +967,20 @@ void ManageOpenPositions() {
    }
    
    // Vérifier si une direction est complètement activée et supprimer les ordres opposés
-   if(buyPositions >= BuyStopOrders) {
-      Log("RECOVERY", "All buy positions activated (" + IntegerToString(buyPositions) + 
-          "/" + IntegerToString(BuyStopOrders) + 
-          "). Deleting all sell stop orders.");
-      DeleteAllPendingOrders(ORDER_TYPE_SELL_STOP);
-   }
-   
-   if(sellPositions >= SellStopOrders) {
-      Log("RECOVERY", "All sell positions activated (" + IntegerToString(sellPositions) + 
-          "/" + IntegerToString(SellStopOrders) + 
-          "). Deleting all buy stop orders.");
-      DeleteAllPendingOrders(ORDER_TYPE_BUY_STOP);
+   if(DeleteOppositePendingOrders) {
+      if(buyPositions >= BuyStopOrders) {
+         Log("RECOVERY", "All buy positions activated (" + IntegerToString(buyPositions) + 
+             "/" + IntegerToString(BuyStopOrders) + 
+             "). Deleting all sell stop orders.");
+         DeleteAllPendingOrders(ORDER_TYPE_SELL_STOP);
+      }
+      
+      if(sellPositions >= SellStopOrders) {
+         Log("RECOVERY", "All sell positions activated (" + IntegerToString(sellPositions) + 
+             "/" + IntegerToString(SellStopOrders) + 
+             "). Deleting all buy stop orders.");
+         DeleteAllPendingOrders(ORDER_TYPE_BUY_STOP);
+      }
    }
 }
 
