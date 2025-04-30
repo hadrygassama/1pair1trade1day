@@ -140,6 +140,7 @@ int currentRecoveryCycle = 0;
 bool recoveryActive = false;
 datetime lastRecoveryCheck = 0;
 datetime lastRecoveryCloseTime = 0;
+datetime lastCycleIncrementDay = 0;  // Nouvelle variable pour suivre le dernier jour d'incrémentation
 
 // Daily trade counters
 int dailyBuyTrades = 0;
@@ -685,40 +686,21 @@ void PlacePendingOrders() {
       double sellStopPrice = dailyLow - BufferDistance * Point();
       
       // Check for positions from previous day to activate recovery
-      datetime today = TimeGMT() - (TimeGMT() % 86400); // Today at midnight GMT
       bool hasPreviousDaysPositions = CheckPreviousDaysPositions();
       
       // Activate recovery if needed
-      if(hasPreviousDaysPositions) {
-         if(!recoveryActive) {
-            // Activer le système de récupération
-            recoveryActive = true;
-            Log("RECOVERY", "Recovery system activated");
-         }
-         
-         // Initialiser ou incrémenter le cycle si :
-         // 1. Le système est actif
-         // 2. Le cycle actuel n'a pas atteint le maximum
-         // 3. Une position d'un jour antérieur est trouvée
-         if(recoveryActive && currentRecoveryCycle < RecoveryMaxCycle) {
-            if(currentRecoveryCycle == 0) {
-               currentRecoveryCycle = 1;
-               Log("RECOVERY", "Initializing recovery cycle to 1 (Found positions from previous days)");
-            } else {
-               currentRecoveryCycle++;
-               Log("RECOVERY", "Recovery cycle incremented to: " + IntegerToString(currentRecoveryCycle) + 
-                   " (Found positions from previous days)");
-            }
-         } else if(currentRecoveryCycle >= RecoveryMaxCycle) {
-            Log("RECOVERY", "Cannot increment recovery - max cycles reached (" + 
-                IntegerToString(currentRecoveryCycle) + "/" + IntegerToString(RecoveryMaxCycle) + ")");
-         }
+      if(hasPreviousDaysPositions && !recoveryActive) {
+         recoveryActive = true;
+         Log("RECOVERY", "Recovery system activated");
       }
       
       // If recovery is active, only place recovery trades
       if(recoveryActive) {
          Log("RECOVERY", "Recovery system active - Placing recovery trades only");
          double recoveryLotSize = CalculateRecoveryLotSize(CalculateLotSize(), currentRecoveryCycle);
+         
+         // Place recovery trades with cycle number in comment
+         string recoveryComment = Comments + " [RECOVERY]<" + IntegerToString(currentRecoveryCycle) + ">";
          
          // Place recovery trades
          if(TradeDirection == TRADE_BUY || TradeDirection == TRADE_BOTH) {
@@ -730,7 +712,7 @@ void PlacePendingOrders() {
                      double tp = Stealth ? 0 : buyStopPrice + (TakeProfit * RecoveryTPTRBEMultiplier) * Point();
                      double sl = Stealth ? 0 : buyStopPrice - StopLoss * Point();
                      
-                     if(!PlaceOrderWithRetry(ORDER_TYPE_BUY_STOP, recoveryLotSize, buyStopPrice, sl, tp, Comments + " [RECOVERY]")) {
+                     if(!PlaceOrderWithRetry(ORDER_TYPE_BUY_STOP, recoveryLotSize, buyStopPrice, sl, tp, recoveryComment)) {
                         Log("ERROR", "Failed to place Recovery Buy Stop order " + IntegerToString(i+1) + " of " + IntegerToString(BuyStopOrders) + " after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
                      } else {
                         dailyBuyTrades++;
@@ -750,7 +732,7 @@ void PlacePendingOrders() {
                      double tp = Stealth ? 0 : sellStopPrice - (TakeProfit * RecoveryTPTRBEMultiplier) * Point();
                      double sl = Stealth ? 0 : sellStopPrice + StopLoss * Point();
                      
-                     if(!PlaceOrderWithRetry(ORDER_TYPE_SELL_STOP, recoveryLotSize, sellStopPrice, sl, tp, Comments + " [RECOVERY]")) {
+                     if(!PlaceOrderWithRetry(ORDER_TYPE_SELL_STOP, recoveryLotSize, sellStopPrice, sl, tp, recoveryComment)) {
                         Log("ERROR", "Failed to place Recovery Sell Stop order " + IntegerToString(i+1) + " of " + IntegerToString(SellStopOrders) + " after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
                      } else {
                         dailySellTrades++;
@@ -906,10 +888,9 @@ void DeleteAllPendingOrders(ENUM_ORDER_TYPE orderType = WRONG_VALUE) {
 //| Manage open positions                                              |
 //+------------------------------------------------------------------+
 void ManageOpenPositions() {
-   // Compter les positions ouvertes par direction
    int buyPositions = 0;
    int sellPositions = 0;
-   datetime today = TimeGMT() - (TimeGMT() % 86400); // Date actuelle à minuit GMT
+   datetime today = TimeGMT() - (TimeGMT() % 86400);
    
    for(int i = 0; i < PositionsTotal(); i++) {
       if(PositionSelectByTicket(PositionGetTicket(i))) {
@@ -918,16 +899,13 @@ void ManageOpenPositions() {
             
             ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
             datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
-            datetime positionDate = positionTime - (positionTime % 86400); // Date de la position à minuit GMT
+            datetime positionDate = positionTime - (positionTime % 86400);
             string comment = PositionGetString(POSITION_COMMENT);
             bool isRecovery = StringFind(comment, "[RECOVERY]") != -1;
             
-            if(positionDate == today) { // Vérifier si la position a été ouverte aujourd'hui
-               if(posType == POSITION_TYPE_BUY) {
-                  buyPositions++;
-               } else if(posType == POSITION_TYPE_SELL) {
-                  sellPositions++;
-               }
+            if(positionDate == today) {
+               if(posType == POSITION_TYPE_BUY) buyPositions++;
+               else if(posType == POSITION_TYPE_SELL) sellPositions++;
             }
             
             ulong ticket = PositionGetTicket(i);
@@ -936,51 +914,32 @@ void ManageOpenPositions() {
             double sl = PositionGetDouble(POSITION_SL);
             double tp = PositionGetDouble(POSITION_TP);
             
-            // Manage Trailing Stop
             if(EnableTrailingStop) {
-               double profitInPoints = 0;
-               if(posType == POSITION_TYPE_BUY) {
-                  profitInPoints = (currentPrice - openPrice) / Point();
-               } else {
-                  profitInPoints = (openPrice - currentPrice) / Point();
-               }
+               double profitInPoints = posType == POSITION_TYPE_BUY ? 
+                  (currentPrice - openPrice) / Point() : 
+                  (openPrice - currentPrice) / Point();
                
-               // Trailing Stop activates when profit reaches TrailingStopStart
                double trailingStart = isRecovery ? TrailingStopStart * RecoveryTPTRBEMultiplier : TrailingStopStart;
                double trailingLevel = isRecovery ? TrailingStopLevel * RecoveryTPTRBEMultiplier : TrailingStopLevel;
                
                if(profitInPoints >= trailingStart) {
-                  double newSL = 0;
-                  
-                  if(posType == POSITION_TYPE_BUY) {
-                     // Calculate new SL based on current price
-                     newSL = currentPrice - trailingLevel * Point();
+                  double newSL = posType == POSITION_TYPE_BUY ? 
+                     currentPrice - trailingLevel * Point() : 
+                     currentPrice + trailingLevel * Point();
                      
-                     // Only move SL if it's more favorable than current SL
-                     if(newSL > sl) {
-                        if(!ModifyPositionWithRetry(ticket, newSL, tp)) {
-                           Log("ERROR", "Failed to modify position for Trailing Stop after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
-                        } else {
-                           Log("MODIFY", "Trailing Stop updated - Old SL: " + DoubleToString(sl, 5) + 
-                               " New SL: " + DoubleToString(newSL, 5) + 
-                               " Current Price: " + DoubleToString(currentPrice, 5) + 
-                               " Type: " + (isRecovery ? "Recovery" : "Normal"));
-                        }
-                     }
-                  } else {
-                     // Calculate new SL based on current price
-                     newSL = currentPrice + trailingLevel * Point();
+                  bool shouldModify = posType == POSITION_TYPE_BUY ? 
+                     newSL > sl : 
+                     newSL < sl || sl == 0;
                      
-                     // Only move SL if it's more favorable than current SL
-                     if(newSL < sl || sl == 0) {
-                        if(!ModifyPositionWithRetry(ticket, newSL, tp)) {
-                           Log("ERROR", "Failed to modify position for Trailing Stop after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
-                        } else {
-                           Log("MODIFY", "Trailing Stop updated - Old SL: " + DoubleToString(sl, 5) + 
-                               " New SL: " + DoubleToString(newSL, 5) + 
-                               " Current Price: " + DoubleToString(currentPrice, 5) + 
-                               " Type: " + (isRecovery ? "Recovery" : "Normal"));
-                        }
+                  if(shouldModify) {
+                     if(!ModifyPositionWithRetry(ticket, newSL, tp)) {
+                        Log("ERROR", "Failed to modify position for Trailing Stop after " + IntegerToString(MAX_RETRY_ATTEMPTS) + " attempts");
+                     } else {
+                        Log("MODIFY", "Trailing Stop updated - Old SL: " + DoubleToString(sl, 5) + 
+                            " New SL: " + DoubleToString(newSL, 5) + 
+                            " Current Price: " + DoubleToString(currentPrice, 5) + 
+                            " Type: " + (isRecovery ? "Recovery" : "Normal") + 
+                            " Direction: " + (posType == POSITION_TYPE_BUY ? "BUY" : "SELL"));
                      }
                   }
                }
@@ -989,7 +948,6 @@ void ManageOpenPositions() {
       }
    }
    
-   // Vérifier si une direction est complètement activée et supprimer les ordres opposés
    if(DeleteOppositePendingOrders) {
       if(buyPositions >= BuyStopOrders) {
          Log("RECOVERY", "All buy positions activated (" + IntegerToString(buyPositions) + 
@@ -1020,6 +978,28 @@ void ManageRecoverySystem() {
    if(TimeGMT() - lastRecoveryCheck < 60) return; // Check every minute
    lastRecoveryCheck = TimeGMT();
    
+   // Vérifier s'il existe des positions de recovery
+   bool hasRecoveryPositions = false;
+   for(int i = 0; i < PositionsTotal(); i++) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetString(POSITION_SYMBOL) == "GBPUSD" && 
+            PositionGetInteger(POSITION_MAGIC) == Magic &&
+            StringFind(PositionGetString(POSITION_COMMENT), "[RECOVERY]") != -1) {
+            hasRecoveryPositions = true;
+            break;
+         }
+      }
+   }
+   
+   // Désactiver recovery si aucune position de recovery ou positions antérieures
+   if(recoveryActive && !hasRecoveryPositions && !CheckPreviousDaysPositions()) {
+      recoveryActive = false;
+      currentRecoveryCycle = 0;
+      lastCycleIncrementDay = 0;  // Réinitialiser le jour d'incrémentation
+      Log("RECOVERY", "No recovery positions or previous day positions found - Recovery system deactivated");
+      return;
+   }
+   
    // Check if recovery should be activated
    bool shouldActivateRecovery = false;
    if(EnableMinDrawdownForRecovery) {
@@ -1040,16 +1020,25 @@ void ManageRecoverySystem() {
          // Activate recovery system and initialize cycle to 1
          recoveryActive = true;
          currentRecoveryCycle = 1;
+         lastCycleIncrementDay = TimeGMT() - (TimeGMT() % 86400);  // Initialiser avec le jour actuel
          Log("RECOVERY", "Recovery system activated. Current cycle: " + IntegerToString(currentRecoveryCycle));
       } else if(currentRecoveryCycle < RecoveryMaxCycle) {
-         // Increment cycle only if we found positions from previous days
-         if(CheckPreviousDaysPositions()) {
-            currentRecoveryCycle++;
-            Log("RECOVERY", "Recovery cycle incremented to: " + IntegerToString(currentRecoveryCycle) + 
-                " (Found positions from previous days)");
+         // Vérifier si on est dans un nouveau jour
+         datetime currentDay = TimeGMT() - (TimeGMT() % 86400);
+         if(currentDay > lastCycleIncrementDay) {
+            // Vérification explicite des limites de cycles avant incrémentation
+            if(CheckPreviousDaysPositions() && currentRecoveryCycle < RecoveryMaxCycle) {
+               currentRecoveryCycle++;
+               lastCycleIncrementDay = currentDay;  // Mettre à jour le jour d'incrémentation
+               Log("RECOVERY", "Recovery cycle incremented to: " + IntegerToString(currentRecoveryCycle));
+            } else if(currentRecoveryCycle >= RecoveryMaxCycle) {
+               Log("RECOVERY", "Maximum recovery cycles reached: " + IntegerToString(currentRecoveryCycle) + 
+                   "/" + IntegerToString(RecoveryMaxCycle));
+            }
          }
       } else {
-         Log("RECOVERY", "Cannot increment recovery - max cycles reached (" + IntegerToString(currentRecoveryCycle) + "/" + IntegerToString(RecoveryMaxCycle) + ")");
+         Log("RECOVERY", "Cannot increment recovery - max cycles reached (" + 
+             IntegerToString(currentRecoveryCycle) + "/" + IntegerToString(RecoveryMaxCycle) + ")");
       }
    }
    
@@ -1753,33 +1742,6 @@ void ManageRecoveryPositions() {
         recoveryActive = false;
         return;
     }
-    
-    // Apply trailing stop to remaining positions
-    for(int i = PositionsTotal() - 1; i >= 0; i--) {
-        ulong ticket = PositionGetTicket(i);
-        if(ticket <= 0) continue;
-        
-        if(!PositionSelectByTicket(ticket)) continue;
-        
-        string symbol = PositionGetString(POSITION_SYMBOL);
-        if(symbol != Symbol()) continue;
-        
-        double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-        double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-        double currentSL = PositionGetDouble(POSITION_SL);
-        double currentTP = PositionGetDouble(POSITION_TP);
-        
-        if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
-            double newSL = currentPrice - TrailingStopLevel * Point();
-            if(newSL > currentSL) {
-                if(!trade.PositionModify(ticket, newSL, currentTP)) {
-                    Log("ERROR", "Failed to modify position #" + IntegerToString(ticket) + " Error: " + IntegerToString(GetLastError()));
-                } else {
-                    Log("MODIFY", "Trailing Stop updated - Old SL: " + DoubleToString(currentSL, 5) + " New SL: " + DoubleToString(newSL, 5) + " Current Price: " + DoubleToString(currentPrice, 5) + " Type: Recovery");
-                }
-            }
-        }
-    }
 }
 
 //+------------------------------------------------------------------+
@@ -1806,8 +1768,7 @@ bool CloseOldestPosition() {
    // Close the oldest position if found
    if(oldestTicket > 0) {
       if(ClosePositionWithRetry(oldestTicket)) {
-         Log("RECOVERY", "Successfully closed oldest trade #" + IntegerToString(oldestTicket) + 
-             " opened at " + TimeToString(oldestTime));
+         Log("RECOVERY", "Successfully closed oldest trade #" + IntegerToString(oldestTicket));
          return true;
       } else {
          Log("ERROR", "Failed to close oldest trade #" + IntegerToString(oldestTicket));
