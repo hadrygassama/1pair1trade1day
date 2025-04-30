@@ -144,7 +144,7 @@ bool recoveryActive = false;
 datetime lastRecoveryCheck = 0;
 datetime lastRecoveryCloseTime = 0;
 datetime lastCycleIncrementDay = 0;  // Nouvelle variable pour suivre le dernier jour d'incrémentation
-int closedCycles[];  // Nouveau tableau pour suivre les cycles qui ont déjà fermé un trade
+string closedCycles[];  // Tableau pour stocker les cycles et leurs tickets (format: "cycleNumberticket1ticket2...")
 
 // Daily trade counters
 int dailyBuyTrades = 0;
@@ -1117,8 +1117,7 @@ void ManageRecoverySystem() {
             }
             
             if(!cycleAlreadyClosed && IsCycleClosed(cycle)) {
-                Log("RECOVERY", "Cycle " + IntegerToString(cycle) + "/" + IntegerToString(RecoveryMaxCycle) + 
-                    " - Cycle fermé détecté");
+                Log("RECOVERY", StringFormat("Cycle %d/%d - Cycle fermé détecté", cycle, RecoveryMaxCycle));
                 
                 // Fermer la position la plus ancienne
                 if(CloseOldestPosition()) {
@@ -1126,12 +1125,10 @@ void ManageRecoverySystem() {
                     int size = ArraySize(closedCycles);
                     ArrayResize(closedCycles, size + 1);
                     closedCycles[size] = cycle;
-                    Log("RECOVERY", "Cycle " + IntegerToString(cycle) + "/" + IntegerToString(RecoveryMaxCycle) + 
-                        " - Position la plus ancienne fermée avec succès");
+                    Log("RECOVERY", StringFormat("Cycle %d/%d - Position la plus ancienne fermée avec succès", cycle, RecoveryMaxCycle));
                     UpdatePositionGroups();
                 } else {
-                    Log("RECOVERY", "Cycle " + IntegerToString(cycle) + "/" + IntegerToString(RecoveryMaxCycle) + 
-                        " - Impossible de fermer la position la plus ancienne");
+                    Log("RECOVERY", StringFormat("Cycle %d/%d - Impossible de fermer la position la plus ancienne", cycle, RecoveryMaxCycle));
                 }
             }
         }
@@ -1259,6 +1256,12 @@ void SortPositionGroups(PositionGroup &groups[]) {
 //| Close oldest position                                              |
 //+------------------------------------------------------------------+
 bool CloseOldestPosition() {
+   // Vérifier si on est en mode recovery
+   if(!recoveryActive) {
+      Log("RECOVERY", "Impossible de fermer les positions anciennes : le système de récupération n'est pas actif");
+      return false;
+   }
+
    int positionsToClose = RecoveryClosePreviousTrades;
    int positionsClosed = 0;
    bool success = true;
@@ -1871,4 +1874,90 @@ double CalculateClosedCycleProfit(int cycleNumber) {
    }
    
    return cycleTotalProfit;
+}
+
+//+------------------------------------------------------------------+
+//| Check if cycle has already closed a trade                         |
+//+------------------------------------------------------------------+
+bool IsCycleAlreadyClosed(int cycleNumber, ulong ticket) {
+   string cycleKey = IntegerToString(cycleNumber);
+   for(int i = 0; i < ArraySize(closedCycles); i++) {
+      if(StringSubstr(closedCycles[i], 0, StringLen(cycleKey)) == cycleKey) {
+         // Vérifier si le ticket est déjà dans la liste
+         string tickets = StringSubstr(closedCycles[i], StringLen(cycleKey));
+         if(StringFind(tickets, IntegerToString(ticket)) != -1) {
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Add cycle and ticket to closed cycles list                        |
+//+------------------------------------------------------------------+
+void AddCycleAndTicket(int cycleNumber, ulong ticket) {
+   string cycleKey = IntegerToString(cycleNumber);
+   bool cycleFound = false;
+   string ticketStr = IntegerToString(ticket);
+   
+   for(int i = 0; i < ArraySize(closedCycles); i++) {
+      if(StringSubstr(closedCycles[i], 0, StringLen(cycleKey)) == cycleKey) {
+         // Récupérer les tickets existants
+         string existingTickets = StringSubstr(closedCycles[i], StringLen(cycleKey));
+         
+         // Créer un tableau temporaire pour trier les tickets
+         string tempTickets[];
+         int count = 0;
+         
+         // Ajouter le nouveau ticket
+         int size = ArraySize(tempTickets);
+         ArrayResize(tempTickets, size + 1);
+         tempTickets[size] = ticketStr;
+         count++;
+         
+         // Ajouter les tickets existants
+         for(int j = 0; j < StringLen(existingTickets); j += 4) { // Supposant que les tickets ont 4 chiffres
+            string existingTicket = StringSubstr(existingTickets, j, 4);
+            if(StringLen(existingTicket) > 0) {
+               size = ArraySize(tempTickets);
+               ArrayResize(tempTickets, size + 1);
+               tempTickets[size] = existingTicket;
+               count++;
+            }
+         }
+         
+         // Trier les tickets
+         for(int j = 0; j < count - 1; j++) {
+            for(int k = j + 1; k < count; k++) {
+               if(StringToInteger(tempTickets[j]) > StringToInteger(tempTickets[k])) {
+                  string temp = tempTickets[j];
+                  tempTickets[j] = tempTickets[k];
+                  tempTickets[k] = temp;
+               }
+            }
+         }
+         
+         // Reconstruire la chaîne avec les tickets triés
+         string sortedTickets = "";
+         for(int j = 0; j < count; j++) {
+            sortedTickets += tempTickets[j];
+         }
+         
+         // Mettre à jour l'entrée
+         closedCycles[i] = cycleKey + sortedTickets;
+         cycleFound = true;
+         break;
+      }
+   }
+   
+   if(!cycleFound) {
+      // Créer une nouvelle entrée pour ce cycle
+      int size = ArraySize(closedCycles);
+      ArrayResize(closedCycles, size + 1);
+      closedCycles[size] = cycleKey + ticketStr;
+   }
+   
+   Log("RECOVERY", "Cycle " + IntegerToString(cycleNumber) + " - Added ticket " + IntegerToString(ticket) + 
+       " to closed trades list");
 }
