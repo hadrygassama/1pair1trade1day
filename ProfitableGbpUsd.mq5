@@ -133,6 +133,8 @@ struct PositionGroup {
    int positionCount;
    int cycleNumber;
    bool isRecovery;
+   bool isClosed;              // New field to track if cycle is closed
+   double closedProfit;        // New field to track closed cycle profit
 };
 
 PositionGroup buyGroups[];
@@ -142,6 +144,7 @@ bool recoveryActive = false;
 datetime lastRecoveryCheck = 0;
 datetime lastRecoveryCloseTime = 0;
 datetime lastCycleIncrementDay = 0;  // Nouvelle variable pour suivre le dernier jour d'incrémentation
+int closedCycles[];  // Nouveau tableau pour suivre les cycles qui ont déjà fermé un trade
 
 // Daily trade counters
 int dailyBuyTrades = 0;
@@ -940,33 +943,89 @@ void ManageOpenPositions() {
 }
 
 //+------------------------------------------------------------------+
+//| Vérifie si un cycle est fermé en consultant l'historique          |
+//+------------------------------------------------------------------+
+bool IsCycleClosed(int cycleNumber) {
+   static datetime lastCheckTime = 0;
+   static int lastCheckedCycle = 0;
+   
+   datetime currentTime = TimeGMT();
+   if(currentTime - lastCheckTime < 60 && cycleNumber == lastCheckedCycle) {
+      return false;
+   }
+   
+   lastCheckTime = currentTime;
+   lastCheckedCycle = cycleNumber;
+   
+   // Sélectionner l'historique des 180 derniers jours
+   datetime endTime = TimeGMT();
+   datetime startTime = endTime - 180 * 24 * 60 * 60;
+   
+   if(!HistorySelect(startTime, endTime)) {
+      Log("ERROR", "Échec de la sélection de l'historique pour le cycle " + IntegerToString(cycleNumber));
+      return false;
+   }
+   
+   int dealsTotal = HistoryDealsTotal();
+   bool foundCyclePositions = false;
+   
+   // Parcourir l'historique pour trouver les positions du cycle
+   for(int i = 0; i < dealsTotal; i++) {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket > 0) {
+         string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+         long magic = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
+         string comment = HistoryDealGetString(dealTicket, DEAL_COMMENT);
+         
+         if(symbol == Symbol() && magic == Magic && StringFind(comment, "[RECOVERY]") != -1) {
+            int pos1 = StringFind(comment, "<");
+            int pos2 = StringFind(comment, ">");
+            int dealCycle = -1;
+            
+            if(pos1 != -1 && pos2 != -1 && pos2 > pos1) {
+               string cycleStr = StringSubstr(comment, pos1 + 1, pos2 - pos1 - 1);
+               dealCycle = (int)StringToInteger(cycleStr);
+            }
+            
+            if(dealCycle == cycleNumber) {
+               foundCyclePositions = true;
+               break;
+            }
+         }
+      }
+   }
+   
+   return foundCyclePositions;
+}
+
+//+------------------------------------------------------------------+
 //| Manage recovery system                                             |
 //+------------------------------------------------------------------+
 void ManageRecoverySystem() {
-    if(!EnableRecovery) {
-        Log("RECOVERY", "Recovery system disabled in settings");
-        return;
-    }
+   if(!EnableRecovery) {
+      Log("RECOVERY", "Système de récupération désactivé dans les paramètres");
+      return;
+   }
+   
+   // Vérifier si nous devons mettre à jour le statut de récupération
+   if(TimeGMT() - lastRecoveryCheck < 60) return; // Vérifier toutes les minutes
+   lastRecoveryCheck = TimeGMT();
     
-    // Check if we need to update recovery status
-    if(TimeGMT() - lastRecoveryCheck < 60) return; // Check every minute
-    lastRecoveryCheck = TimeGMT();
-    
-    // Ensure terminal is synchronized
+    // S'assurer que le terminal est synchronisé
     if(!isSynchronized) {
-        Log("RECOVERY", "Terminal not synchronized, skipping recovery position management");
+        Log("RECOVERY", "Terminal non synchronisé, saut de la gestion des positions de récupération");
         return;
     }
     
-    // Update position groups to get latest data
+    // Mettre à jour les groupes de positions pour obtenir les dernières données
     UpdatePositionGroups();
     
-    // Track active cycles
+    // Suivre les cycles actifs
     bool hasRecoveryPositions = false;
     int activeCycles[];
     ArrayResize(activeCycles, 0);
     
-    // Identify active cycles from open positions
+    // Identifier les cycles actifs à partir des positions ouvertes
     for(int i = 0; i < ArraySize(buyGroups); i++) {
         if(buyGroups[i].isRecovery) {
             hasRecoveryPositions = true;
@@ -982,7 +1041,7 @@ void ManageRecoverySystem() {
                 int size = ArraySize(activeCycles);
                 ArrayResize(activeCycles, size + 1);
                 activeCycles[size] = cycle;
-                Log("RECOVERY", "Found active recovery cycle " + IntegerToString(cycle) + " in buy positions");
+                Log("RECOVERY", "Cycle de récupération actif " + IntegerToString(cycle) + " trouvé dans les positions d'achat");
             }
         }
     }
@@ -1001,42 +1060,43 @@ void ManageRecoverySystem() {
                 int size = ArraySize(activeCycles);
                 ArrayResize(activeCycles, size + 1);
                 activeCycles[size] = cycle;
-                Log("RECOVERY", "Found active recovery cycle " + IntegerToString(cycle) + " in sell positions");
+                Log("RECOVERY", "Cycle de récupération actif " + IntegerToString(cycle) + " trouvé dans les positions de vente");
             }
         }
     }
-    
-    // Check if recovery should be activated
-    bool shouldActivateRecovery = false;
-    if(EnableMinDrawdownForRecovery) {
-        double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
-        double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-        double drawdownPercent = ((currentBalance - currentEquity) / currentBalance) * 100;
-        shouldActivateRecovery = drawdownPercent >= MinDrawdownPercentForRecovery;
-        Log("RECOVERY", "Checking drawdown: Current=" + DoubleToString(drawdownPercent, 2) + 
-            "% Required=" + DoubleToString(MinDrawdownPercentForRecovery, 2) + "%");
-    } else {
-        shouldActivateRecovery = CheckPreviousDaysPositions();
-    }
-    
-    if(shouldActivateRecovery) {
-        if(!recoveryActive) {
-            recoveryActive = true;
-            currentRecoveryCycle = 1;
-            lastCycleIncrementDay = TimeGMT() - (TimeGMT() % 86400);
-            Log("RECOVERY", "Recovery system activated. Current cycle: " + IntegerToString(currentRecoveryCycle));
+   
+   // Vérifier si la récupération doit être activée
+   bool shouldActivateRecovery = false;
+   if(EnableMinDrawdownForRecovery) {
+      double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double drawdownPercent = ((currentBalance - currentEquity) / currentBalance) * 100;
+      shouldActivateRecovery = drawdownPercent >= MinDrawdownPercentForRecovery;
+      Log("RECOVERY", "Vérification du drawdown: Actuel=" + DoubleToString(drawdownPercent, 2) + 
+          "% Requis=" + DoubleToString(MinDrawdownPercentForRecovery, 2) + "%");
+   } else {
+      shouldActivateRecovery = CheckPreviousDaysPositions();
+   }
+   
+   if(shouldActivateRecovery) {
+      if(!recoveryActive) {
+         recoveryActive = true;
+         currentRecoveryCycle = 1;
+         lastCycleIncrementDay = TimeGMT() - (TimeGMT() % 86400);
+         ArrayResize(closedCycles, 0); // Réinitialiser le tableau des cycles fermés
+         Log("RECOVERY", "Système de récupération activé. Cycle actuel: " + IntegerToString(currentRecoveryCycle));
         }
         
-        // Check for cycle increment
+        // Vérifier l'incrémentation du cycle
         datetime currentDay = TimeGMT() - (TimeGMT() % 86400);
         if(currentDay > lastCycleIncrementDay && currentRecoveryCycle < RecoveryMaxCycle) {
             currentRecoveryCycle++;
             lastCycleIncrementDay = currentDay;
-            Log("RECOVERY", "Recovery cycle incremented to: " + IntegerToString(currentRecoveryCycle));
+            Log("RECOVERY", "Cycle de récupération incrémenté à: " + IntegerToString(currentRecoveryCycle));
         }
     }
     
-    // Check for closed cycles (up to RecoveryMaxCycle)
+    // Vérifier les cycles fermés (jusqu'à RecoveryMaxCycle)
     for(int cycle = 1; cycle <= RecoveryMaxCycle; cycle++) {
         bool isCycleActive = false;
         for(int i = 0; i < ArraySize(activeCycles); i++) {
@@ -1047,34 +1107,42 @@ void ManageRecoverySystem() {
         }
         
         if(!isCycleActive) {
-            double cycleProfit = CalculateClosedCycleProfit(cycle);
-            if(cycleProfit != 0.0) {
+            // Vérifier si le cycle a déjà fermé un trade
+            bool cycleAlreadyClosed = false;
+            for(int i = 0; i < ArraySize(closedCycles); i++) {
+                if(closedCycles[i] == cycle) {
+                    cycleAlreadyClosed = true;
+                    break;
+                }
+            }
+            
+            if(!cycleAlreadyClosed && IsCycleClosed(cycle)) {
                 Log("RECOVERY", "Cycle " + IntegerToString(cycle) + "/" + IntegerToString(RecoveryMaxCycle) + 
-                    " - Closed cycle detected, Profit: " + DoubleToString(cycleProfit, 2));
+                    " - Cycle fermé détecté");
                 
-                if(cycleProfit > 0) {
+                // Fermer la position la plus ancienne
+                if(CloseOldestPosition()) {
+                    // Ajouter le cycle à la liste des cycles qui ont fermé un trade
+                    int size = ArraySize(closedCycles);
+                    ArrayResize(closedCycles, size + 1);
+                    closedCycles[size] = cycle;
                     Log("RECOVERY", "Cycle " + IntegerToString(cycle) + "/" + IntegerToString(RecoveryMaxCycle) + 
-                        " - Profit positive (" + DoubleToString(cycleProfit, 2) + "), attempting to close oldest position");
-                    if(CloseOldestPosition()) {
-                        Log("RECOVERY", "Cycle " + IntegerToString(cycle) + "/" + IntegerToString(RecoveryMaxCycle) + 
-                            " - Oldest position successfully closed");
-                        UpdatePositionGroups();
-                    }
+                        " - Position la plus ancienne fermée avec succès");
+                    UpdatePositionGroups();
                 } else {
                     Log("RECOVERY", "Cycle " + IntegerToString(cycle) + "/" + IntegerToString(RecoveryMaxCycle) + 
-                        " - Profit not positive (" + DoubleToString(cycleProfit, 2) + "), no action taken");
+                        " - Impossible de fermer la position la plus ancienne");
                 }
-            } else {
-                Log("RECOVERY", "No historical data found for cycle " + IntegerToString(cycle) + "/" + IntegerToString(RecoveryMaxCycle));
             }
         }
     }
     
-    // Reset recovery system if no positions remain
+    // Réinitialiser le système de récupération si aucune position ne reste
     if(!hasRecoveryPositions && !CheckPreviousDaysPositions()) {
-        Log("RECOVERY", "No recovery positions left - Resetting recovery system");
+        Log("RECOVERY", "Aucune position de récupération restante - Réinitialisation du système de récupération");
         currentRecoveryCycle = 0;
         recoveryActive = false;
+        ArrayResize(closedCycles, 0); // Réinitialiser le tableau des cycles fermés
     }
 }
 
@@ -1191,45 +1259,68 @@ void SortPositionGroups(PositionGroup &groups[]) {
 //| Close oldest position                                              |
 //+------------------------------------------------------------------+
 bool CloseOldestPosition() {
-   ulong oldestTicket = 0;
-   datetime oldestTime = 0;
-   double oldestVolume = 0;
-   ENUM_POSITION_TYPE oldestType = WRONG_VALUE;
+   int positionsToClose = RecoveryClosePreviousTrades;
+   int positionsClosed = 0;
+   bool success = true;
    
-   // Find the oldest position
-   for(int i = 0; i < PositionsTotal(); i++) {
-      if(PositionSelectByTicket(PositionGetTicket(i))) {
-         if(PositionGetString(POSITION_SYMBOL) == Symbol() && 
-            PositionGetInteger(POSITION_MAGIC) == Magic) {
-            datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
-            if(oldestTime == 0 || positionTime < oldestTime) {
-               oldestTime = positionTime;
-               oldestTicket = PositionGetTicket(i);
-               oldestVolume = PositionGetDouble(POSITION_VOLUME);
-               oldestType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+   while(positionsToClose > 0) {
+      ulong oldestTicket = 0;
+      ulong lowestTicket = 0;
+      double oldestVolume = 0;
+      ENUM_POSITION_TYPE oldestType = WRONG_VALUE;
+      datetime oldestTime = 0;
+      
+      // Find the oldest position based on ticket number and open time
+      for(int i = 0; i < PositionsTotal(); i++) {
+         if(PositionSelectByTicket(PositionGetTicket(i))) {
+            if(PositionGetString(POSITION_SYMBOL) == Symbol() && 
+               PositionGetInteger(POSITION_MAGIC) == Magic) {
+               ulong currentTicket = PositionGetTicket(i);
+               datetime currentTime = (datetime)PositionGetInteger(POSITION_TIME);
+               
+               // Si c'est la première position ou si le ticket est plus bas
+               if(oldestTicket == 0 || currentTicket < lowestTicket) {
+                  lowestTicket = currentTicket;
+                  oldestTicket = currentTicket;
+                  oldestVolume = PositionGetDouble(POSITION_VOLUME);
+                  oldestType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+                  oldestTime = currentTime;
+               }
             }
          }
       }
-   }
-   
-   // Close the oldest position if found
-   if(oldestTicket > 0) {
-      Log("RECOVERY", "Attempting to close oldest position - Ticket: " + IntegerToString(oldestTicket) + 
-          " - Time: " + TimeToString(oldestTime) + 
-          " - Volume: " + DoubleToString(oldestVolume, 2) + 
-          " - Type: " + (oldestType == POSITION_TYPE_BUY ? "BUY" : "SELL"));
-          
-      if(ClosePositionWithRetry(oldestTicket)) {
-         Log("RECOVERY", "Successfully closed oldest trade #" + IntegerToString(oldestTicket));
-         return true;
+      
+      // Close the oldest position if found
+      if(oldestTicket > 0) {
+         Log("RECOVERY", "Attempting to close position " + IntegerToString(positionsClosed + 1) + 
+             " of " + IntegerToString(RecoveryClosePreviousTrades) + 
+             " - Ticket: " + IntegerToString(oldestTicket) + 
+             " - Volume: " + DoubleToString(oldestVolume, 2) + 
+             " - Type: " + (oldestType == POSITION_TYPE_BUY ? "BUY" : "SELL") +
+             " - Open Time: " + TimeToString(oldestTime));
+             
+         if(ClosePositionWithRetry(oldestTicket)) {
+            Log("RECOVERY", "Successfully closed trade #" + IntegerToString(oldestTicket));
+            positionsClosed++;
+         } else {
+            Log("ERROR", "Failed to close trade #" + IntegerToString(oldestTicket));
+            success = false;
+            break;
+         }
       } else {
-         Log("ERROR", "Failed to close oldest trade #" + IntegerToString(oldestTicket));
-         return false;
+         Log("RECOVERY", "No more positions found to close");
+         break;
       }
+      
+      positionsToClose--;
    }
    
-   Log("RECOVERY", "No positions found to close");
-   return false;
+   if(positionsClosed > 0) {
+      Log("RECOVERY", "Closed " + IntegerToString(positionsClosed) + " positions out of " + 
+          IntegerToString(RecoveryClosePreviousTrades) + " requested");
+   }
+   
+   return success;
 }
 
 //+------------------------------------------------------------------+
@@ -1740,8 +1831,10 @@ double CalculateClosedCycleProfit(int cycleNumber) {
             
             if(dealCycle == cycleNumber) {
                ENUM_DEAL_TYPE dealType = (ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+               ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
                
-               if(dealType == DEAL_TYPE_BUY || dealType == DEAL_TYPE_SELL) {
+               // Only process deals that are part of position closure
+               if(dealEntry == DEAL_ENTRY_OUT || dealEntry == DEAL_ENTRY_OUT_BY) {
                   foundClosedPositions = true;
                   
                   double dealProfit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
@@ -1755,6 +1848,7 @@ double CalculateClosedCycleProfit(int cycleNumber) {
                       " - Ticket: " + IntegerToString(dealTicket) + 
                       " - Time: " + TimeToString((datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME)) +
                       " - Type: " + (dealType == DEAL_TYPE_BUY ? "BUY" : "SELL") +
+                      " - Entry: " + (dealEntry == DEAL_ENTRY_OUT ? "OUT" : "OUT_BY") +
                       " - Volume: " + DoubleToString(HistoryDealGetDouble(dealTicket, DEAL_VOLUME), 2) +
                       " - Profit: " + DoubleToString(dealProfit, 2) +
                       " - Swap: " + DoubleToString(dealSwap, 2) +
@@ -1778,4 +1872,3 @@ double CalculateClosedCycleProfit(int cycleNumber) {
    
    return cycleTotalProfit;
 }
-  
