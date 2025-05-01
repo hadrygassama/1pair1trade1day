@@ -24,15 +24,13 @@ input string   Pairs = "EURUSD,GBPUSD,USDJPY,AUDUSD,NZDUSD,USDCAD,EURGBP,EURJPY,
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Direction
 input int      Magic = 548762;         // Magic
 input double   Lots = 0.05;            // Lots
-input int      OpenTime = 30;          // Time between orders
+input int      OpenTime = 60;          // Time between orders
 input int      TimeStartHour = 0;      // Start hour
 input int      TimeStartMinute = 0;    // Start minute
 input int      TimeEndHour = 23;       // End hour
 input int      TimeEndMinute = 59;     // End minute
 input int      MaxSpread = 40;         // Max spread (pips)
 input int      PriceStepPoints = 10;   // Price step (points)
-input bool     EnableMinEntryDistance = true;  // Activer distance min entre positions
-input int MinEntryDistancePoints = 30; // Min distance entre positions (points)
 
 input group    "=== RSI Settings ==="
 input bool     UseRsiFilter = true;    // Use RSI
@@ -569,12 +567,6 @@ void OpenBuyOrder(string symbol) {
             }
          }
          
-         // Vérification de la distance minimale APRÈS le RSI
-         if(!IsMinEntryDistanceRespected(symbol, ask, POSITION_TYPE_BUY, MinEntryDistancePoints)) {
-            Print("Nouvelle entrée BUY trop proche d'une position existante sur ", symbol);
-            return;
-         }
-         
          // Get symbol volume step
          double volumeStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
          
@@ -634,12 +626,6 @@ void OpenSellOrder(string symbol) {
                Print("RSI condition non respectée pour SELL sur ", symbol, " - RSI: ", rsi);
                return;
             }
-         }
-         
-         // Vérification de la distance minimale APRÈS le RSI
-         if(!IsMinEntryDistanceRespected(symbol, bid, POSITION_TYPE_SELL, MinEntryDistancePoints)) {
-            Print("Nouvelle entrée SELL trop proche d'une position existante sur ", symbol);
-            return;
          }
          
          // Get symbol volume step
@@ -1287,29 +1273,4 @@ void CreateLabel(string name, string text, int x, int y, color clr) {
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);  // Make sure labels are visible
    ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
-}
-
-//+------------------------------------------------------------------+
-//| Vérifie que la distance minimale est respectée entre le prix d'entrée proposé et toutes les positions existantes de la même direction |
-//+------------------------------------------------------------------+
-bool IsMinEntryDistanceRespected(string symbol, double entryPrice, ENUM_POSITION_TYPE posType, int minDistancePoints) {
-    // Si la vérification est désactivée, retourner true
-    if(!EnableMinEntryDistance) return true;
-    
-    double localPoint = SymbolInfoDouble(symbol, SYMBOL_POINT);
-    for(int i = PositionsTotal() - 1; i >= 0; i--) {
-        if(PositionSelectByTicket(PositionGetTicket(i))) {
-            if(PositionGetInteger(POSITION_MAGIC) == Magic &&
-               PositionGetString(POSITION_SYMBOL) == symbol &&
-               PositionGetInteger(POSITION_TYPE) == posType) {
-                double posPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-                double distance = MathAbs(entryPrice - posPrice) / localPoint;
-                if(distance < minDistancePoints) {
-                    Print("Distance minimale non respectée: ", distance, " points avec position existante");
-                    return false;
-                }
-            }
-        }
-    }
-    return true;
 } 
