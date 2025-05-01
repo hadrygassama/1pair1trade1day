@@ -19,15 +19,20 @@ enum ENUM_TRADE_DIRECTION {
    TRADE_BOTH           // Buy and Sell
 };
 
+// RSI strategy type enum
+enum ENUM_RSI_STRATEGY {
+   RSI_REVERSAL,        // Reversal strategy (buy when RSI < 30, sell when RSI > 70)
+   RSI_CONTINUATION     // Continuation strategy (buy when RSI > 70, sell when RSI < 30)
+};
+
 // Expert parameters
 input group    "=== Trading Settings ==="
-input string Pairs = "EURUSD,GBPUSD,USDJPY,AUDUSD,NZDUSD,USDCAD,USDCHF,EURGBP,EURJPY,GBPJPY,AUDJPY,NZDJPY,CADJPY,CHFJPY,EURAUD,EURNZD,EURCAD,EURCHF,GBPAUD,GBPCAD,GBPCHF";  // 21 pairs majeures et mineures
+input string Pairs = "EURUSD,GBPUSD,USDJPY,AUDUSD,NZDUSD,USDCAD,USDCHF,EURGBP,EURJPY,GBPJPY,AUDJPY,NZDJPY,CADJPY,CHFJPY,EURAUD,EURNZD,EURCAD,EURCHF,GBPAUD,GBPCAD,GBPCHF,AUDCAD,AUDCHF,CADCHF,EURCHF,GBPCHF,GBPNZD,NZDCHF,NZDCAD";  // Pairs to trade
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Direction
-input double   Lots = 0.05;            // Lots
+input double   Lots = 0.1;            // Lots
 input int      Magic = 548762;         // Magic
 
 input group    "=== Time Settings ==="
-input int      OpenTime = 60;          // Time between orders
 input int      TimeStartHour = 0;      // Start hour
 input int      TimeStartMinute = 0;    // Start minute
 input int      TimeEndHour = 23;       // End hour
@@ -38,23 +43,22 @@ input int      ManualBrokerOffset = 3;         // Manual broker GMT offset in ho
 
 input group    "=== Entry Conditions ==="
 input int      MaxSpread = 40;         // Max spread (pips)
-input int      PriceStepPoints = 10;   // Price step (points)
-input bool     UseRsiFilter = true;    // Use RSI
+input ENUM_RSI_STRATEGY RsiStrategy = RSI_REVERSAL;  // RSI strategy type
 input int      RsiPeriod = 14;         // Period
 input int      RsiBuyLevel = 30;       // Buy level
 input int      RsiSellLevel = 70;      // Sell level
 
 input group    "=== Exit Conditions ==="
-input int      TakeProfitPoints = 300;  // Take Profit
-input int      TrailingStopPoints = 200;  // Trailing Stop
-input int      TrailingStartPoints = 100;  // Trailing Start
+input int      TakeProfitPoints = 30;  // Take Profit
+input int      TrailingStopPoints = 20;  // Trailing Stop
+input int      TrailingStartPoints = 10;  // Trailing Start
 
 input group    "=== DCA Settings ==="
 input bool     EnableMaxDCAPositions = false;  // Limit DCA
 input int      MaxDCAPositions = 100;    // Max DCA positions
 input bool     EnableLotMultiplier = true;  // Enable lot multiplier for DCA
 input double   LotMultiplier = 1.5;      // DCA lot multiplier
-input double   MaxLotEntry = 0.5;        // Maximum lot size for DCA entries
+input double   MaxLotEntry = 1;        // Maximum lot size for DCA entries
 
 input group    "=== Interface Settings ==="
 input bool     Info = true;            // Show panel
@@ -311,10 +315,6 @@ int OnInit() {
       return INIT_PARAMETERS_INCORRECT;
    }
    
-   if(OpenTime <= 0) {
-      return INIT_PARAMETERS_INCORRECT;
-   }
-   
    if(TimeStartHour < 0 || TimeStartHour > 23) {
       return INIT_PARAMETERS_INCORRECT;
    }
@@ -328,10 +328,6 @@ int OnInit() {
    }
    
    if(MaxSpread <= 0) {
-      return INIT_PARAMETERS_INCORRECT;
-   }
-   
-   if(PriceStepPoints <= 0) {
       return INIT_PARAMETERS_INCORRECT;
    }
    
@@ -437,6 +433,7 @@ void OnTick() {
    } else {
       if(currentTimeInMinutes < startTimeInMinutes && currentTimeInMinutes >= endTimeInMinutes) return;
    }
+   
    for(int i = 0; i < ArraySize(pairsArray); i++) {
       string currentSymbol = pairsArray[i];
       point = SymbolInfoDouble(currentSymbol, SYMBOL_POINT);
@@ -445,59 +442,50 @@ void OnTick() {
       currentSpread = ask - bid;
       spreadInPips = currentSpread / (point * 10);
       if(spreadInPips > MaxSpread) continue;
+      
       canOpenBuy = false;
       canOpenSell = false;
-      if(currentTime >= lastOpenTimeArray[i] + OpenTime) {
-         // RSI cache par symbole
-         datetime barTime = iTime(currentSymbol, PERIOD_CURRENT, 0);
-         if(rsiCache[i].lastBarTime != barTime) {
-            rsiCache[i].lastRsi = GetRSI(currentSymbol, RsiPeriod, PRICE_CLOSE);
-            rsiCache[i].lastBarTime = barTime;
+      
+      // RSI cache par symbole - calculé une seule fois par bougie
+      datetime barTime = iTime(currentSymbol, PERIOD_CURRENT, 0);
+      if(rsiCache[i].lastBarTime != barTime) {
+         rsiCache[i].lastRsi = GetRSI(currentSymbol, RsiPeriod, PRICE_CLOSE);
+         rsiCache[i].lastBarTime = barTime;
+      }
+      
+      // Check buy conditions
+      if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
+         bool rsiCondition = (RsiStrategy == RSI_REVERSAL) ? (rsiCache[i].lastRsi < RsiBuyLevel) : (rsiCache[i].lastRsi > RsiSellLevel);
+         if(rsiCondition) {
+            canOpenBuy = true;
          }
-         // Check buy conditions
-         if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
-            bool rsiCondition = true;
-            if(UseRsiFilter) {
-               rsiCondition = (rsiCache[i].lastRsi < RsiBuyLevel);
-            }
-            if(bid - PriceStepPoints * point >= lastBidPriceArray[i] && rsiCondition) {
-               canOpenBuy = true;
-               lastBidPriceArray[i] = bid;
-            }
-            if(Debug) {
-               Print(StringFormat("[%s] Buy check - Symbol: %s RSI: %f RSI Condition: %s Price Condition: %s Last Bid: %f Current Bid: %f",
-                  TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
-                  currentSymbol, rsiCache[i].lastRsi, rsiCondition ? "true" : "false",
-                  (bid - PriceStepPoints * point >= lastBidPriceArray[i]) ? "true" : "false",
-                  lastBidPriceArray[i], bid));
-            }
+         if(Debug) {
+            Print(StringFormat("[%s] Buy check - Symbol: %s RSI: %f RSI Condition: %s",
+               TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+               currentSymbol, rsiCache[i].lastRsi, rsiCondition ? "true" : "false"));
          }
-         // Check sell conditions
-         if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
-            bool rsiCondition = true;
-            if(UseRsiFilter) {
-               rsiCondition = (rsiCache[i].lastRsi > RsiSellLevel);
-            }
-            if(bid + PriceStepPoints * point <= lastBidPriceArray[i] && rsiCondition) {
-               canOpenSell = true;
-               lastBidPriceArray[i] = bid;
-            }
-            if(Debug) {
-               Print(StringFormat("[%s] Sell check - Symbol: %s RSI: %f RSI Condition: %s Price Condition: %s Last Bid: %f Current Bid: %f",
-                  TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
-                  currentSymbol, rsiCache[i].lastRsi, rsiCondition ? "true" : "false",
-                  (bid + PriceStepPoints * point <= lastBidPriceArray[i]) ? "true" : "false",
-                  lastBidPriceArray[i], bid));
-            }
+      }
+      
+      // Check sell conditions
+      if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
+         bool rsiCondition = (RsiStrategy == RSI_REVERSAL) ? (rsiCache[i].lastRsi > RsiSellLevel) : (rsiCache[i].lastRsi < RsiBuyLevel);
+         if(rsiCondition) {
+            canOpenSell = true;
          }
-         if(canOpenBuy || canOpenSell) {
-            lastOpenTimeArray[i] = currentTime;
+         if(Debug) {
+            Print(StringFormat("[%s] Sell check - Symbol: %s RSI: %f RSI Condition: %s",
+               TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+               currentSymbol, rsiCache[i].lastRsi, rsiCondition ? "true" : "false"));
          }
+      }
+      
+      if(canOpenBuy || canOpenSell) {
+         lastOpenTimeArray[i] = currentTime;
       }
       if(canOpenBuy) OpenBuyOrder(currentSymbol, i);
       if(canOpenSell) OpenSellOrder(currentSymbol, i);
       UpdateTrailingStops(currentSymbol, bid, ask);
-      CheckDCAConditions(currentSymbol);
+      CheckDCAConditions(currentSymbol, i);
    }
 }
 
@@ -530,13 +518,6 @@ void OpenBuyOrder(string symbol, int idx) {
          string status = "OK";
          string extra = "";
          bool rsiCondition = true;
-         if(UseRsiFilter) {
-            rsiCondition = (localRsi < RsiBuyLevel);
-            if(!rsiCondition) {
-               LogInfo(symbol, "BUY", localRsi, "B", currentLots, buyPositions, profit, sprd, status, extra);
-               return;
-            }
-         }
          if(!trade.Buy(currentLots, symbol, ask, 0, 0, expertName)) {
             status = "FAIL";
             extra = IntegerToString(GetLastError());
@@ -580,13 +561,6 @@ void OpenSellOrder(string symbol, int idx) {
          string status = "OK";
          string extra = "";
          bool rsiCondition = true;
-         if(UseRsiFilter) {
-            rsiCondition = (localRsi > RsiSellLevel);
-            if(!rsiCondition) {
-               LogInfo(symbol, "SELL", localRsi, "S", currentLots, sellPositions, profit, sprd, status, extra);
-               return;
-            }
-         }
          if(!trade.Sell(currentLots, symbol, bid, 0, 0, expertName)) {
             status = "FAIL";
             extra = IntegerToString(GetLastError());
@@ -647,7 +621,6 @@ int CountPositionsInCurrentBar(string symbol, ENUM_POSITION_TYPE positionType) {
 void CalculatePositionInfo(string symbol, ENUM_POSITION_TYPE positionType, PositionInfo &info) {
    info.totalProfit = 0;
    info.currentDD = 0;
-   info.maxDD = 0;
    info.closedProfit = 0;
    
    double maxProfit = 0;
@@ -670,13 +643,13 @@ void CalculatePositionInfo(string symbol, ENUM_POSITION_TYPE positionType, Posit
             if(currentDD > info.currentDD) {
                info.currentDD = currentDD;
             }
-            
-            if(currentDD > info.maxDD) {
-               info.maxDD = currentDD;
-            }
          }
       }
    }
+   
+   // Mettre à jour le maxDD uniquement si le drawdown courant est supérieur
+   if(info.currentDD > info.maxDD)
+      info.maxDD = info.currentDD;
    
    // Calculate closed profit from history
    HistorySelect(0, TimeCurrent());
@@ -693,10 +666,6 @@ void CalculatePositionInfo(string symbol, ENUM_POSITION_TYPE positionType, Posit
 //+------------------------------------------------------------------+
 //| Update Position Statistics                                         |
 //+------------------------------------------------------------------+
-// Met à jour les statistiques globales des positions
-// - Calcule les statistiques pour chaque symbole
-// - Met à jour le profit total et le drawdown total
-// - Met à jour les statistiques pour les positions d'achat et de vente
 void UpdatePositionStatistics() {
    // Reset global variables
    totalProfit = 0;
@@ -714,12 +683,22 @@ void UpdatePositionStatistics() {
       
       // Update total profit
       totalProfit += buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit;
+      
+      // Update max drawdown for each pair
+      if(buyInfoArray[i].currentDD > buyInfoArray[i].maxDD) {
+         buyInfoArray[i].maxDD = buyInfoArray[i].currentDD;
+      }
+      if(sellInfoArray[i].currentDD > sellInfoArray[i].maxDD) {
+         sellInfoArray[i].maxDD = sellInfoArray[i].currentDD;
+      }
    }
    
    // Calculate total drawdown
    if(totalProfit < 0) {
       currentTotalDD = MathAbs(totalProfit) / initialBalance * 100;
-      maxTotalDD = MathMax(maxTotalDD, currentTotalDD);
+      if(currentTotalDD > maxTotalDD) {
+         maxTotalDD = currentTotalDD;
+      }
    }
 }
 
@@ -899,7 +878,7 @@ void ClosePositionsInDirection(string symbol, ENUM_POSITION_TYPE positionType) {
 //   * Vérifie si le nombre maximum de positions DCA n'est pas atteint
 // Paramètres :
 //   symbol : Le symbole à traiter
-void CheckDCAConditions(string symbol) {
+void CheckDCAConditions(string symbol, int idx) {
    // Variables pour Buy
    double buyAveragePrice = 0;
    double buyTotalLots = 0;
@@ -940,41 +919,27 @@ void CheckDCAConditions(string symbol) {
    double localPoint = SymbolInfoDouble(symbol, SYMBOL_POINT);
    double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-   
+
    // Vérifier les conditions DCA pour Buy si autorisé
    if(TradeDirection != TRADE_SELL_ONLY && buyPositionCount > 0) {
-      // Vérifier le filtre RSI si activé
-      bool rsiCondition = true;
-      if(UseRsiFilter) {
-         rsiCondition = (buyAveragePrice < RsiBuyLevel);
-      }
-      
-      if(bid + PriceStepPoints * localPoint <= buyAveragePrice && 
-         (!EnableMaxDCAPositions || buyPositionCount < MaxDCAPositions) &&
-         rsiCondition) {  // Ajout de la condition RSI
-         
+      double rsi = rsiCache[idx].lastRsi;
+      bool rsiCondition = (RsiStrategy == RSI_REVERSAL) ? (rsi < RsiBuyLevel) : (rsi > RsiSellLevel);
+      if(rsiCondition) {
          int positionsInCurrentBar = CountPositionsInCurrentBar(symbol, POSITION_TYPE_BUY);
          if(positionsInCurrentBar == 0) {
-            OpenBuyOrder(symbol, 0);
+            OpenBuyOrder(symbol, idx);
          }
       }
    }
    
    // Vérifier les conditions DCA pour Sell si autorisé
    if(TradeDirection != TRADE_BUY_ONLY && sellPositionCount > 0) {
-      // Vérifier le filtre RSI si activé
-      bool rsiCondition = true;
-      if(UseRsiFilter) {
-         rsiCondition = (sellAveragePrice > RsiSellLevel);
-      }
-      
-      if(ask - PriceStepPoints * localPoint >= sellAveragePrice && 
-         (!EnableMaxDCAPositions || sellPositionCount < MaxDCAPositions) &&
-         rsiCondition) {  // Ajout de la condition RSI
-         
+      double rsi = rsiCache[idx].lastRsi;
+      bool rsiCondition = (RsiStrategy == RSI_REVERSAL) ? (rsi > RsiSellLevel) : (rsi < RsiBuyLevel);
+      if(rsiCondition) {
          int positionsInCurrentBar = CountPositionsInCurrentBar(symbol, POSITION_TYPE_SELL);
          if(positionsInCurrentBar == 0) {
-            OpenSellOrder(symbol, 0);
+            OpenSellOrder(symbol, idx);
          }
       }
    }
@@ -1004,6 +969,14 @@ void UpdateInfoPanel() {
    int y = PanelYDistance;
    int yStep = FontSize + 4;
    
+   // Limiter à 30 paires max pour l'affichage
+   int maxPairs = MathMin(ArraySize(pairsArray), 30);
+   bool tooManyPairs = (ArraySize(pairsArray) > 30);
+
+   // Tableau pour éviter les doublons
+   string displayedPairs[100];
+   int displayedCount = 0;
+
    // Informations globales du compte
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -1057,7 +1030,7 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Display information for each XXX/USD pair
-   for(int i = 0; i < ArraySize(pairsArray); i++) {
+   for(int i = 0; i < maxPairs; i++) {
       string symbol = pairsArray[i];
       string cleanSymbol = symbol;
       StringReplace(cleanSymbol, "/", "");
@@ -1068,6 +1041,18 @@ void UpdateInfoPanel() {
       
       // Check if it's a XXX/USD pair
       if(StringSubstr(cleanSymbol, 3, 3) == "USD") {
+         // Vérifier si déjà affichée
+         bool alreadyDisplayed = false;
+         for(int d = 0; d < displayedCount; d++) {
+            if(displayedPairs[d] == symbol) {
+               alreadyDisplayed = true;
+               break;
+            }
+         }
+         if(alreadyDisplayed) continue;
+         // Ajouter à la liste des affichées
+         displayedPairs[displayedCount] = symbol;
+         displayedCount++;
          // Calculate position information
          CalculatePositionInfo(symbol, POSITION_TYPE_BUY, buyInfoArray[i]);
          CalculatePositionInfo(symbol, POSITION_TYPE_SELL, sellInfoArray[i]);
@@ -1108,7 +1093,7 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Display information for each USD/XXX pair
-   for(int i = 0; i < ArraySize(pairsArray); i++) {
+   for(int i = 0; i < maxPairs; i++) {
       string symbol = pairsArray[i];
       string cleanSymbol = symbol;
       StringReplace(cleanSymbol, "/", "");
@@ -1119,6 +1104,18 @@ void UpdateInfoPanel() {
       
       // Check if it's a USD/XXX pair
       if(StringSubstr(cleanSymbol, 0, 3) == "USD") {
+         // Vérifier si déjà affichée
+         bool alreadyDisplayed = false;
+         for(int d = 0; d < displayedCount; d++) {
+            if(displayedPairs[d] == symbol) {
+               alreadyDisplayed = true;
+               break;
+            }
+         }
+         if(alreadyDisplayed) continue;
+         // Ajouter à la liste des affichées
+         displayedPairs[displayedCount] = symbol;
+         displayedCount++;
          // Calculate position information
          CalculatePositionInfo(symbol, POSITION_TYPE_BUY, buyInfoArray[i]);
          CalculatePositionInfo(symbol, POSITION_TYPE_SELL, sellInfoArray[i]);
@@ -1159,7 +1156,7 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Display information for other pairs
-   for(int i = 0; i < ArraySize(pairsArray); i++) {
+   for(int i = 0; i < maxPairs; i++) {
       string symbol = pairsArray[i];
       string cleanSymbol = symbol;
       StringReplace(cleanSymbol, "/", "");
@@ -1170,6 +1167,18 @@ void UpdateInfoPanel() {
       
       // Check if it's a pair without USD
       if(StringFind(cleanSymbol, "USD") == -1) {
+         // Vérifier si déjà affichée
+         bool alreadyDisplayed = false;
+         for(int d = 0; d < displayedCount; d++) {
+            if(displayedPairs[d] == symbol) {
+               alreadyDisplayed = true;
+               break;
+            }
+         }
+         if(alreadyDisplayed) continue;
+         // Ajouter à la liste des affichées
+         displayedPairs[displayedCount] = symbol;
+         displayedCount++;
          // Calculate position information
          CalculatePositionInfo(symbol, POSITION_TYPE_BUY, buyInfoArray[i]);
          CalculatePositionInfo(symbol, POSITION_TYPE_SELL, sellInfoArray[i]);
@@ -1192,6 +1201,25 @@ void UpdateInfoPanel() {
          UpdateLabel(prefix + "Other_" + IntegerToString(i), line, x, y, lineColor);
          y += yStep;
       }
+   }
+   
+   // === AJOUT : Affichage du total général P/L et Closed ===
+   double globalPL = 0;
+   double globalClosed = 0;
+   for(int i = 0; i < maxPairs; i++) {
+      globalPL += buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit;
+      globalClosed += buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit;
+   }
+   y += yStep; // espace
+   string totalLine = StringFormat("TOTAL P/L: %.2f   |   CLOSED TOTAL: %.2f", globalPL, globalClosed);
+   double globalTotal = globalPL + globalClosed;
+   UpdateLabel(prefix + "GlobalTotalPL", totalLine, x, y, globalTotal > 0 ? clrLime : (globalTotal < 0 ? clrRed : TextColor));
+   y += yStep;
+   
+   // Message d'avertissement si > 30 paires
+   if(tooManyPairs) {
+      UpdateLabel(prefix + "TooManyPairs", "Affichage limité aux 30 premières paires.", x, y, clrOrange);
+      y += yStep;
    }
    
    // Forcer le redessinage du graphique
