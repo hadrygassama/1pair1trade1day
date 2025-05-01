@@ -22,23 +22,28 @@ enum ENUM_TRADE_DIRECTION {
 input group    "=== Trading Settings ==="
 input string   Pairs = "EURUSD,GBPUSD,USDJPY,AUDUSD,NZDUSD,USDCAD,EURGBP,EURJPY,GBPJPY,AUDJPY";  // Pairs list
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Direction
-input int      Magic = 548762;         // Magic
 input double   Lots = 0.05;            // Lots
+input int      Magic = 548762;         // Magic
+
+input group    "=== Time Settings ==="
 input int      OpenTime = 60;          // Time between orders
 input int      TimeStartHour = 0;      // Start hour
 input int      TimeStartMinute = 0;    // Start minute
 input int      TimeEndHour = 23;       // End hour
 input int      TimeEndMinute = 59;     // End minute
+input bool     AutoDetectBrokerOffset = true;  // Auto-detect broker time offset
+input bool     BrokerIsAheadOfGMT = false;     // Broker time is ahead of GMT (e.g. GMT+2)
+input int      ManualBrokerOffset = 3;         // Manual broker GMT offset in hours
+
+input group    "=== Entry Conditions ==="
 input int      MaxSpread = 40;         // Max spread (pips)
 input int      PriceStepPoints = 10;   // Price step (points)
-
-input group    "=== RSI Settings ==="
 input bool     UseRsiFilter = true;    // Use RSI
 input int      RsiPeriod = 14;         // Period
 input int      RsiBuyLevel = 30;       // Buy level
 input int      RsiSellLevel = 70;      // Sell level
 
-input group    "=== Stop Loss/Take Profit Settings ==="
+input group    "=== Exit Conditions ==="
 input int      TakeProfitPoints = 300;  // Take Profit
 input int      TrailingStopPoints = 200;  // Trailing Stop
 input int      TrailingStartPoints = 100;  // Trailing Start
@@ -59,10 +64,9 @@ input int      PanelWidth = 500;       // Panel width
 input int      FontSize = 12;          // Font size
 input color    TextColor = clrWhite;   // Text color
 
-input group    "=== Time Settings ==="
-input bool     AutoDetectBrokerOffset = true;  // Auto-detect broker time offset
-input bool     BrokerIsAheadOfGMT = false;     // Broker time is ahead of GMT (e.g. GMT+2)
-input int      ManualBrokerOffset = 3;         // Manual broker GMT offset in hours (always positive)
+input group    "=== Debug Settings ==="
+input bool     Debug = false;          // Show debug logs
+input int      InfoPanelRefreshSec = 5; // Info panel refresh (sec)
 
 // Global variables
 CTrade trade;
@@ -114,6 +118,17 @@ PositionInfo buyInfo;
 PositionInfo sellInfo;
 double totalClosedProfit = 0;  // Profit total des trades fermés pour le compte
 
+// Variables pour cache RSI par symbole
+struct RsiCache {
+   datetime lastBarTime;
+   double lastRsi;
+};
+RsiCache rsiCache[100]; // 100 paires max
+
+datetime lastPanelUpdate = 0;
+datetime lastStatsUpdate = 0;
+datetime lastBarTimeGlobal = 0;
+
 //+------------------------------------------------------------------+
 //| Detect broker time offset automatically                           |
 //+------------------------------------------------------------------+
@@ -130,7 +145,6 @@ int DetectBrokerOffset() {
       diffHours += (diffSeconds > 0 ? 1 : -1);
    }
    
-   Print("Detected broker time offset: GMT", (diffHours >= 0 ? "+" : ""), diffHours);
    return diffHours;
 }
 
@@ -149,19 +163,17 @@ datetime LocalToBrokerTime(datetime localTime) {
 double GetRSI(string symbol, int period, ENUM_APPLIED_PRICE price) {
    // Check if symbol is available
    if(!SymbolSelect(symbol, true)) {
-      Print("Error: Symbol ", symbol, " is not available");
       return -1;
    }
    
    // Check if symbol is active
    if(!SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_FULL) {
-      Print("Warning: Symbol ", symbol, " is not fully tradeable");
+      return -1;
    }
    
    // Get RSI indicator handle
    int rsiHandle = iRSI(symbol, PERIOD_CURRENT, period, price);
    if(rsiHandle == INVALID_HANDLE) {
-      Print("Error: Failed to create RSI indicator for ", symbol);
       return -1;
    }
    
@@ -171,7 +183,6 @@ double GetRSI(string symbol, int period, ENUM_APPLIED_PRICE price) {
       Sleep(100);
       waited += 100;
       if(waited >= maxWait) {
-         Print("Error: RSI initialization timeout for ", symbol);
          IndicatorRelease(rsiHandle);
          return -1;
       }
@@ -190,28 +201,18 @@ double GetRSI(string symbol, int period, ENUM_APPLIED_PRICE price) {
       
       tries++;
       if(tries < maxTries) {
-         Print("Warning: Retry ", tries, " to copy RSI buffer for ", symbol);
          Sleep(100);
       }
    }
    
    if(copied != period + 1) {
-      Print("Error: Failed to copy RSI buffer for ", symbol, 
-            " - Error: ", GetLastError(), 
-            " - Copied: ", copied,
-            " - Buffer size: ", ArraySize(rsiBuffer),
-            " - Period: ", period,
-            " - Price: ", EnumToString(price));
       IndicatorRelease(rsiHandle);
       return -1;
    }
    
    // Check if value is valid
    if(rsiBuffer[0] == 0 || rsiBuffer[0] == EMPTY_VALUE) {
-      Print("Warning: Invalid RSI value for ", symbol, 
-            " - Value: ", rsiBuffer[0],
-            " - Period: ", period,
-            " - Price: ", EnumToString(price));
+      return -1;
    }
    
    // Release handle and return value
@@ -264,7 +265,6 @@ string NormalizePairName(string basicPair) {
    }
    
    if(basePos == -1 || quotePos == -1) {
-      Print("Error: Could not find valid currency codes in ", basicPair);
       return basicPair;
    }
    
@@ -296,7 +296,6 @@ string NormalizePairName(string basicPair) {
    }
    
    if(brokerFormat == "") {
-      Print("Warning: Could not detect broker format for ", basicPair, ". Using default format.");
       return basicPair;
    }
    
@@ -309,83 +308,68 @@ string NormalizePairName(string basicPair) {
 int OnInit() {
    // Validate trading parameters
    if(Lots <= 0) {
-      Print("Error: Lots must be greater than 0");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    if(OpenTime <= 0) {
-      Print("Error: OpenTime must be greater than 0");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    if(TimeStartHour < 0 || TimeStartHour > 23) {
-      Print("Error: TimeStartHour must be between 0 and 23");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    if(TimeEndHour < 0 || TimeEndHour > 23) {
-      Print("Error: TimeEndHour must be between 0 and 23");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    if(TimeStartHour >= TimeEndHour) {
-      Print("Error: TimeStartHour must be less than TimeEndHour");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    if(MaxSpread <= 0) {
-      Print("Error: MaxSpread must be greater than 0");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    if(PriceStepPoints <= 0) {
-      Print("Error: PriceStepPoints must be greater than 0");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    // Validate RSI parameters
    if(RsiPeriod <= 0) {
-      Print("Error: RsiPeriod must be greater than 0");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    if(RsiBuyLevel < 0 || RsiBuyLevel > 100) {
-      Print("Error: RsiBuyLevel must be between 0 and 100");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    if(RsiSellLevel < 0 || RsiSellLevel > 100) {
-      Print("Error: RsiSellLevel must be between 0 and 100");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    // Validate stop loss/take profit parameters
    if(TrailingStopPoints < 0) {
-      Print("Error: TrailingStopPoints must be greater than or equal to 0");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    if(TrailingStartPoints < 0) {
-      Print("Error: TrailingStartPoints must be greater than or equal to 0");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    // Validate interface parameters
    if(FontSize <= 0) {
-      Print("Error: FontSize must be greater than 0");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    // Validate pairs string
    if(StringLen(Pairs) == 0) {
-      Print("Error: Pairs string is empty");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    // Initialize pairs array
    StringSplit(Pairs, ',', pairsArray);
    if(ArraySize(pairsArray) == 0) {
-      Print("Error: No valid pairs found in Pairs string");
       return INIT_PARAMETERS_INCORRECT;
    }
    
@@ -393,7 +377,6 @@ int OnInit() {
    for(int i = 0; i < ArraySize(pairsArray); i++) {
       string normalizedPair = NormalizePairName(pairsArray[i]);
       if(!SymbolSelect(normalizedPair, true)) {
-         Print("Error: Symbol ", normalizedPair, " is not available");
          return INIT_PARAMETERS_INCORRECT;
       }
       // Update array with normalized name
@@ -402,12 +385,11 @@ int OnInit() {
    
    // Validate DCA parameters
    if(MaxDCAPositions <= 0) {
-      Print("Error: MaxDCAPositions must be greater than 0");
       return INIT_PARAMETERS_INCORRECT;
    }
    
    if(MaxDCAPositions > 5) {
-      Print("Warning: MaxDCAPositions is set to ", MaxDCAPositions, " which is higher than recommended (1-5). This may lead to excessive risk exposure.");
+      return INIT_PARAMETERS_INCORRECT;
    }
    
    // Initialize trade object
@@ -417,10 +399,6 @@ int OnInit() {
    maxSellDD = 0;
    maxTotalDD = 0;
    
-   Print("EA initialized successfully - Magic: ", Magic);
-   Print("Trading pairs: ", Pairs);
-   Print("Initial balance: ", initialBalance);
-   
    return(INIT_SUCCEEDED);
 }
 
@@ -429,7 +407,6 @@ int OnInit() {
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason) {
    ObjectsDeleteAll(0, "EA_Info_");
-   Print("EA deinitialized");
 }
 
 //+------------------------------------------------------------------+
@@ -440,101 +417,91 @@ void OnTick() {
    currentTime = TimeGMT();
    TimeToStruct(currentTime, timeStruct);
    
-   // Update info panel first
-   if(Info) UpdateInfoPanel();
+   // Rafraîchir le panneau d'info toutes les InfoPanelRefreshSec secondes
+   if(Info && (TimeCurrent() - lastPanelUpdate > InfoPanelRefreshSec)) {
+      UpdateInfoPanel();
+      lastPanelUpdate = TimeCurrent();
+   }
+   
+   // Rafraîchir les stats globales à chaque nouvelle barre
+   datetime currentBarTimeGlobal = iTime(pairsArray[0], PERIOD_CURRENT, 0);
+   if(currentBarTimeGlobal != lastBarTimeGlobal) {
+      UpdatePositionStatistics();
+      lastBarTimeGlobal = currentBarTimeGlobal;
+   }
    
    // Check trading hours (using broker time)
    int currentHour = timeStruct.hour;
    int currentMinute = timeStruct.min;
-   
-   // Convert start and end times to minutes for easier comparison
    int startTimeInMinutes = TimeStartHour * 60 + TimeStartMinute;
    int endTimeInMinutes = TimeEndHour * 60 + TimeEndMinute;
    int currentTimeInMinutes = currentHour * 60 + currentMinute;
-   
-   // Check if current time is within trading hours
    if(startTimeInMinutes <= endTimeInMinutes) {
-      // Normal trading session (same day)
       if(currentTimeInMinutes < startTimeInMinutes || currentTimeInMinutes >= endTimeInMinutes) return;
    } else {
-      // Trading session spans midnight
       if(currentTimeInMinutes < startTimeInMinutes && currentTimeInMinutes >= endTimeInMinutes) return;
    }
-   
-   // Process each currency pair
    for(int i = 0; i < ArraySize(pairsArray); i++) {
       string currentSymbol = pairsArray[i];
-      
-      // Get symbol properties once per iteration
       point = SymbolInfoDouble(currentSymbol, SYMBOL_POINT);
       double bid = SymbolInfoDouble(currentSymbol, SYMBOL_BID);
       double ask = SymbolInfoDouble(currentSymbol, SYMBOL_ASK);
-      
-      // Check spread
       currentSpread = ask - bid;
       spreadInPips = currentSpread / (point * 10);
       if(spreadInPips > MaxSpread) continue;
-      
-      // Initialize trade conditions
       canOpenBuy = false;
       canOpenSell = false;
-      
-      // Check if enough time has passed since last trade for this specific pair
       if(currentTime >= lastOpenTime + OpenTime) {
+         // RSI cache par symbole
+         datetime barTime = iTime(currentSymbol, PERIOD_CURRENT, 0);
+         if(rsiCache[i].lastBarTime != barTime) {
+            rsiCache[i].lastRsi = GetRSI(currentSymbol, RsiPeriod, PRICE_CLOSE);
+            rsiCache[i].lastBarTime = barTime;
+         }
+         double rsi = rsiCache[i].lastRsi;
          // Check buy conditions
          if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
             bool rsiCondition = true;
             if(UseRsiFilter) {
-               rsi = GetRSI(currentSymbol, RsiPeriod, PRICE_CLOSE);
-               rsiCondition = (rsi < RsiBuyLevel);  // Buy when RSI is below 30 (oversold)
-               datetime brokerTime = LocalToBrokerTime(TimeCurrent());
-               Print("[", TimeToString(brokerTime, TIME_DATE|TIME_SECONDS), "] Buy check - Symbol: ", currentSymbol, 
-                     " RSI: ", rsi, " RSI Condition: ", rsiCondition, 
-                     " Price Condition: ", (bid - PriceStepPoints * point >= lastBidPrice),
-                     " Last Bid: ", lastBidPrice, " Current Bid: ", bid);
+               rsiCondition = (rsi < RsiBuyLevel);
             }
-            
             if(bid - PriceStepPoints * point >= lastBidPrice && rsiCondition) {
                canOpenBuy = true;
-               Print("Buy condition met for ", currentSymbol, " - RSI: ", rsi);
-               lastBidPrice = bid;  // Update reference price only when condition is met
+               lastBidPrice = bid;
+            }
+            if(Debug) {
+               Print(StringFormat("[%s] Buy check - Symbol: %s RSI: %f RSI Condition: %s Price Condition: %s Last Bid: %f Current Bid: %f",
+                  TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+                  currentSymbol, rsi, rsiCondition ? "true" : "false",
+                  (bid - PriceStepPoints * point >= lastBidPrice) ? "true" : "false",
+                  lastBidPrice, bid));
             }
          }
-         
          // Check sell conditions
          if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
             bool rsiCondition = true;
             if(UseRsiFilter) {
-               rsi = GetRSI(currentSymbol, RsiPeriod, PRICE_CLOSE);
-               rsiCondition = (rsi > RsiSellLevel);  // Sell when RSI is above 70 (overbought)
-               datetime brokerTime = LocalToBrokerTime(TimeCurrent());
-               Print("[", TimeToString(brokerTime, TIME_DATE|TIME_SECONDS), "] Sell check - Symbol: ", currentSymbol, 
-                     " RSI: ", rsi, " RSI Condition: ", rsiCondition,
-                     " Price Condition: ", (bid + PriceStepPoints * point <= lastBidPrice),
-                     " Last Bid: ", lastBidPrice, " Current Bid: ", bid);
+               rsiCondition = (rsi > RsiSellLevel);
             }
-            
             if(bid + PriceStepPoints * point <= lastBidPrice && rsiCondition) {
                canOpenSell = true;
-               Print("Sell condition met for ", currentSymbol, " - RSI: ", rsi);
-               lastBidPrice = bid;  // Update reference price only when condition is met
+               lastBidPrice = bid;
+            }
+            if(Debug) {
+               Print(StringFormat("[%s] Sell check - Symbol: %s RSI: %f RSI Condition: %s Price Condition: %s Last Bid: %f Current Bid: %f",
+                  TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+                  currentSymbol, rsi, rsiCondition ? "true" : "false",
+                  (bid + PriceStepPoints * point <= lastBidPrice) ? "true" : "false",
+                  lastBidPrice, bid));
             }
          }
-         
-         // Open new trades if conditions are met
          if(canOpenBuy || canOpenSell) {
             lastOpenTime = currentTime;
          }
       }
-      
-      // Open new trades if conditions are met
       if(canOpenBuy) OpenBuyOrder(currentSymbol);
       if(canOpenSell) OpenSellOrder(currentSymbol);
-      
-      // Update trailing stops and check take profits
       UpdateTrailingStops(currentSymbol, bid, ask);
-      
-      // Check DCA conditions
       CheckDCAConditions(currentSymbol);
    }
 }
@@ -543,60 +510,44 @@ void OnTick() {
 //| Open Buy Order                                                     |
 //+------------------------------------------------------------------+
 void OpenBuyOrder(string symbol) {
-   // Check if Buy is allowed
    if(TradeDirection == TRADE_SELL_ONLY) return;
-   
    int buyPositions = CountPositions(symbol, POSITION_TYPE_BUY);
-   
-   // Only check MaxDCAPositions if EnableMaxDCAPositions is true
    if(!EnableMaxDCAPositions || buyPositions < MaxDCAPositions) {
       int positionsInCurrentBar = CountPositionsInCurrentBar(symbol, POSITION_TYPE_BUY);
-      
       if(positionsInCurrentBar == 0) {
          double localPoint = SymbolInfoDouble(symbol, SYMBOL_POINT);
          double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-         
-         // Vérification du RSI en premier
+         double volumeStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+         double currentLots = Lots;
+         if(EnableLotMultiplier && buyPositions > 0) {
+            currentLots = Lots * MathPow(LotMultiplier, buyPositions);
+            if(currentLots > MaxLotEntry) currentLots = MaxLotEntry;
+         }
+         currentLots = MathFloor(currentLots / volumeStep) * volumeStep;
+         double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+         double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+         currentLots = MathMax(minLot, MathMin(maxLot, currentLots));
+         double profit = buyInfo.totalProfit;
+         double sprd = SymbolInfoDouble(symbol, SYMBOL_SPREAD);
+         string status = "OK";
+         string extra = "";
          bool rsiCondition = true;
          if(UseRsiFilter) {
             rsi = GetRSI(symbol, RsiPeriod, PRICE_CLOSE);
             rsiCondition = (rsi < RsiBuyLevel);
             if(!rsiCondition) {
-               Print("RSI condition non respectée pour BUY sur ", symbol, " - RSI: ", rsi);
+               LogInfo(symbol, "BUY", rsi, "B", currentLots, buyPositions, profit, sprd, status, extra);
                return;
             }
          }
-         
-         // Get symbol volume step
-         double volumeStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-         
-         // Calculate lot size based on DCA multiplier
-         double currentLots = Lots;
-         if(EnableLotMultiplier && buyPositions > 0) {
-            currentLots = Lots * MathPow(LotMultiplier, buyPositions);
-            if(currentLots > MaxLotEntry) {
-               currentLots = MaxLotEntry;
-            }
-         }
-         
-         // Round lot size to the nearest valid step
-         currentLots = MathFloor(currentLots / volumeStep) * volumeStep;
-         
-         // Ensure lot size is within symbol limits
-         double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-         double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-         currentLots = MathMax(minLot, MathMin(maxLot, currentLots));
-         
          if(!trade.Buy(currentLots, symbol, ask, 0, 0, expertName)) {
-            Print("Buy order failed for ", symbol, ". Error: ", GetLastError());
+            status = "FAIL";
+            extra = IntegerToString(GetLastError());
          }
-         else {
-            Print("Buy order placed successfully for ", symbol, " with lots: ", currentLots);
-         }
+         LogInfo(symbol, "BUY", rsi, "B", currentLots, buyPositions, profit, sprd, status, extra);
       }
-   }
-   else {
-      Print("Maximum DCA Buy positions (", MaxDCAPositions, ") reached for ", symbol);
+   } else {
+      LogInfo(symbol, "BUY", rsi, "B", Lots, buyPositions, buyInfo.totalProfit, SymbolInfoDouble(symbol, SYMBOL_SPREAD), "MAX", "dca");
    }
 }
 
@@ -604,60 +555,44 @@ void OpenBuyOrder(string symbol) {
 //| Open Sell Order                                                    |
 //+------------------------------------------------------------------+
 void OpenSellOrder(string symbol) {
-   // Check if Sell is allowed
    if(TradeDirection == TRADE_BUY_ONLY) return;
-   
    int sellPositions = CountPositions(symbol, POSITION_TYPE_SELL);
-   
-   // Only check MaxDCAPositions if EnableMaxDCAPositions is true
    if(!EnableMaxDCAPositions || sellPositions < MaxDCAPositions) {
       int positionsInCurrentBar = CountPositionsInCurrentBar(symbol, POSITION_TYPE_SELL);
-      
       if(positionsInCurrentBar == 0) {
          double localPoint = SymbolInfoDouble(symbol, SYMBOL_POINT);
          double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-         
-         // Vérification du RSI en premier
+         double volumeStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+         double currentLots = Lots;
+         if(EnableLotMultiplier && sellPositions > 0) {
+            currentLots = Lots * MathPow(LotMultiplier, sellPositions);
+            if(currentLots > MaxLotEntry) currentLots = MaxLotEntry;
+         }
+         currentLots = MathFloor(currentLots / volumeStep) * volumeStep;
+         double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+         double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+         currentLots = MathMax(minLot, MathMin(maxLot, currentLots));
+         double profit = sellInfo.totalProfit;
+         double sprd = SymbolInfoDouble(symbol, SYMBOL_SPREAD);
+         string status = "OK";
+         string extra = "";
          bool rsiCondition = true;
          if(UseRsiFilter) {
             rsi = GetRSI(symbol, RsiPeriod, PRICE_CLOSE);
             rsiCondition = (rsi > RsiSellLevel);
             if(!rsiCondition) {
-               Print("RSI condition non respectée pour SELL sur ", symbol, " - RSI: ", rsi);
+               LogInfo(symbol, "SELL", rsi, "S", currentLots, sellPositions, profit, sprd, status, extra);
                return;
             }
          }
-         
-         // Get symbol volume step
-         double volumeStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-         
-         // Calculate lot size based on DCA multiplier
-         double currentLots = Lots;
-         if(EnableLotMultiplier && sellPositions > 0) {
-            currentLots = Lots * MathPow(LotMultiplier, sellPositions);
-            if(currentLots > MaxLotEntry) {
-               currentLots = MaxLotEntry;
-            }
-         }
-         
-         // Round lot size to the nearest valid step
-         currentLots = MathFloor(currentLots / volumeStep) * volumeStep;
-         
-         // Ensure lot size is within symbol limits
-         double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-         double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-         currentLots = MathMax(minLot, MathMin(maxLot, currentLots));
-         
          if(!trade.Sell(currentLots, symbol, bid, 0, 0, expertName)) {
-            Print("Sell order failed for ", symbol, ". Error: ", GetLastError());
+            status = "FAIL";
+            extra = IntegerToString(GetLastError());
          }
-         else {
-            Print("Sell order placed successfully for ", symbol, " with lots: ", currentLots);
-         }
+         LogInfo(symbol, "SELL", rsi, "S", currentLots, sellPositions, profit, sprd, status, extra);
       }
-   }
-   else {
-      Print("Maximum DCA Sell positions (", MaxDCAPositions, ") reached for ", symbol);
+   } else {
+      LogInfo(symbol, "SELL", rsi, "S", Lots, sellPositions, sellInfo.totalProfit, SymbolInfoDouble(symbol, SYMBOL_SPREAD), "MAX", "dca");
    }
 }
 
@@ -848,7 +783,6 @@ void UpdateTrailingStops(string symbol, double bid, double ask) {
       
       // Vérifier si le Take Profit est atteint pour le groupe Buy
       if(TakeProfitPoints > 0 && buyProfitInPoints >= TakeProfitPoints) {
-         Print("Take Profit reached for Buy positions of ", symbol, " - Profit: ", buyProfitInPoints, " points");
          ClosePositionsInDirection(symbol, POSITION_TYPE_BUY);
       }
       // Sinon, appliquer le trailing stop uniquement aux positions initiales
@@ -887,7 +821,6 @@ void UpdateTrailingStops(string symbol, double bid, double ask) {
       
       // Vérifier si le Take Profit est atteint pour le groupe Sell
       if(TakeProfitPoints > 0 && sellProfitInPoints >= TakeProfitPoints) {
-         Print("Take Profit reached for Sell positions of ", symbol, " - Profit: ", sellProfitInPoints, " points");
          ClosePositionsInDirection(symbol, POSITION_TYPE_SELL);
       }
       // Sinon, appliquer le trailing stop uniquement aux positions initiales
@@ -931,7 +864,7 @@ void ClosePositionsInDirection(string symbol, ENUM_POSITION_TYPE positionType) {
             PositionGetString(POSITION_SYMBOL) == symbol &&
             PositionGetInteger(POSITION_TYPE) == positionType) {
             if(!trade.PositionClose(PositionGetTicket(i))) {
-               Print("Failed to close position ", PositionGetTicket(i), " for ", symbol, ". Error: ", GetLastError());
+               return;
             }
          }
       }
@@ -1007,7 +940,6 @@ void CheckDCAConditions(string symbol) {
          
          int positionsInCurrentBar = CountPositionsInCurrentBar(symbol, POSITION_TYPE_BUY);
          if(positionsInCurrentBar == 0) {
-            Print("DCA Buy condition met for ", symbol, " - Price dropped below average by ", PriceStepPoints, " points, RSI: ", rsi);
             OpenBuyOrder(symbol);
          }
       }
@@ -1028,7 +960,6 @@ void CheckDCAConditions(string symbol) {
          
          int positionsInCurrentBar = CountPositionsInCurrentBar(symbol, POSITION_TYPE_SELL);
          if(positionsInCurrentBar == 0) {
-            Print("DCA Sell condition met for ", symbol, " - Price rose above average by ", PriceStepPoints, " points, RSI: ", rsi);
             OpenSellOrder(symbol);
          }
       }
@@ -1258,7 +1189,6 @@ void UpdateInfoPanel() {
 //+------------------------------------------------------------------+
 void CreateLabel(string name, string text, int x, int y, color clr) {
    if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0)) {
-      Print("Error creating label: ", GetLastError());
       return;
    }
    
@@ -1273,4 +1203,11 @@ void CreateLabel(string name, string text, int x, int y, color clr) {
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);  // Make sure labels are visible
    ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+}
+
+// Fonction de log universel
+void LogInfo(string sym, string act, double rsi, string dir, double lots, int nbPos, double profit, double sprd, string status, string extra) {
+   string msg = StringFormat("%s|%s|RSI:%.1f|%s|L:%.2f|N:%d|P:%.2f|S:%.1f|%s|%s",
+      sym, act, rsi, dir, lots, nbPos, profit, sprd, status, extra);
+   Print(msg);
 } 
