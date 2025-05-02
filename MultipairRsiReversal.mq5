@@ -27,18 +27,21 @@ enum ENUM_RSI_STRATEGY {
 
 // Expert parameters
 input group    "=== Trading Settings ==="
-input string Pairs = "EURUSD,GBPUSD,USDJPY,AUDUSD,NZDUSD,USDCAD,USDCHF,AUDJPY,NZDJPY,CADJPY,CHFJPY,EURAUD,EURNZD,EURCAD,EURCHF,GBPCAD,GBPCHF,AUDCAD,AUDCHF,CADCHF,EURCHF,GBPCHF,NZDCHF,NZDCAD";  // Pairs to trade
+input string Pairs = "EURUSD,GBPUSD,USDCAD,AUDJPY,NZDJPY,EURCAD,AUDCAD,CADCHF,NZDCHF";  // Pairs to trade
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Direction
 input double   Lots = 0.1;            // Lots
 input int      Magic = 548762;         // Magic
 input int      MaxSpread = 40;         // Max spread (pips)
+input int      Slippage = 3;           // Slippage in points
+
+input group    "=== Trading Limits ==="
 input int      MaxTradesPerPair = 0;   // Max trades per pair (0 = unlimited)
 input int      MaxTotalTrades = 0;     // Max trades for all pairs (0 = unlimited)
 input int      MaxTradesPerPairPerDay = 0;  // Max trades per pair per day (0 = unlimited)
 input int      MaxTradesPerDay = 0;         // Max trades per day for all pairs (0 = unlimited)
 input int      MaxActivePairs = 0;     // Max active pairs (0 = unlimited)
 
-input group    "=== Time Settings ==="
+input group    "=== Trading Hours ==="
 input int      TimeStartHour = 0;      // Start hour
 input int      TimeStartMinute = 0;    // Start minute
 input int      TimeEndHour = 23;       // End hour
@@ -47,7 +50,7 @@ input bool     AutoDetectBrokerOffset = true;  // Auto-detect broker time offset
 input bool     BrokerIsAheadOfGMT = false;     // Broker time is ahead of GMT (e.g. GMT+2)
 input int      ManualBrokerOffset = 3;         // Manual broker GMT offset in hours
 
-input group    "=== RSI Filter ==="
+input group    "=== RSI Strategy ==="
 input ENUM_RSI_STRATEGY RsiStrategy = RSI_REVERSAL;  // RSI strategy type
 input ENUM_TIMEFRAMES RsiTimeframe = PERIOD_CURRENT;  // RSI timeframe
 input int      RsiPeriod = 14;         // Period
@@ -55,9 +58,16 @@ input int      RsiBuyLevel = 30;       // RSI Buy level
 input int      RsiSellLevel = 70;      // RSI Sell level
 
 input group    "=== ADX Filter ==="
+input bool     UseAdxFilter = true;    // Enable ADX Filter
 input int      AdxPeriod = 14;         // ADX Period
 input double   AdxThreshold = 25;      // ADX Threshold
-input bool     UseAdxFilter = true;    // Enable ADX Filter
+
+input group    "=== Moving Average Filter ==="
+input bool     UseMaFilter = true;     // Enable MA Filter
+input int      MaPeriod = 20;          // MA Period
+input ENUM_MA_METHOD MaMethod = MODE_EMA;  // MA Method (SMA/EMA)
+input bool     BuyAboveMa = true;      // Buy when price above MA
+input bool     SellBelowMa = true;     // Sell when price below MA
 
 input group    "=== Exit Conditions ==="
 input int      TakeProfitPoints = 30;  // Take Profit
@@ -70,6 +80,12 @@ input bool     EnableLotMultiplier = true;  // Enable lot multiplier for DCA
 input double   LotMultiplier = 1.5;      // DCA lot multiplier
 input double   MaxLotEntry = 1;        // Maximum lot size for DCA entries
 
+input group    "=== Risk Management ==="
+input bool     EnableMaxDrawdown = false;    // Enable max drawdown protection
+input double   MaxDrawdownPercent = 30.0;    // Max drawdown before stopping new trades (%)
+input bool     CloseAllOnEmergency = false;  // Close all trades on emergency drawdown
+input double   EmergencyDrawdownPercent = 1.0;  // Emergency drawdown to close all trades (%)
+
 input group    "=== Interface Settings ==="
 input bool     Info = true;            // Show panel
 input ENUM_BASE_CORNER PanelCorner = CORNER_LEFT_UPPER;  // Corner
@@ -81,12 +97,6 @@ input color    TextColor = clrWhite;   // Text color
 input group    "=== Debug Settings ==="
 input bool     Debug = false;          // Show debug logs
 input int      InfoPanelRefreshSec = 5; // Info panel refresh (sec)
-
-input group    "=== Risk Management ==="
-input bool     EnableMaxDrawdown = false;    // Enable max drawdown protection
-input double   MaxDrawdownPercent = 30.0;    // Max drawdown before stopping new trades (%)
-input bool     CloseAllOnEmergency = false;  // Close all trades on emergency drawdown
-input double   EmergencyDrawdownPercent = 1.0;  // Emergency drawdown to close all trades (%)
 
 // Global variables
 CTrade trade;
@@ -148,6 +158,12 @@ struct AdxCache {
    double lastMinusDI;
 };
 
+// Structure pour le cache MA
+struct MaCache {
+   datetime lastBarTime;
+   double lastMa;
+};
+
 // Variables pour cache RSI par symbole
 struct RsiCache {
    datetime lastBarTime;
@@ -155,6 +171,7 @@ struct RsiCache {
 };
 RsiCache rsiCache[100]; // 100 paires max
 AdxCache adxCache[100]; // 100 paires max
+MaCache maCache[100];   // 100 paires max
 
 datetime lastPanelUpdate = 0;
 datetime lastStatsUpdate = 0;
@@ -629,21 +646,27 @@ void OnTick() {
          adxCache[i].lastAdx = GetADX(currentSymbol, AdxPeriod);
          adxCache[i].lastBarTime = barTime;
       }
+      if(maCache[i].lastBarTime != barTime) {
+         maCache[i].lastMa = GetMA(currentSymbol, MaPeriod, MaMethod);
+         maCache[i].lastBarTime = barTime;
+      }
       
       // Check buy conditions
       if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
          bool rsiCondition = (RsiStrategy == RSI_REVERSAL) ? (rsiCache[i].lastRsi < RsiBuyLevel) : (rsiCache[i].lastRsi > RsiSellLevel);
          bool adxCondition = !UseAdxFilter || (adxCache[i].lastAdx > AdxThreshold);
+         bool maCondition = !UseMaFilter || (BuyAboveMa ? (currentBid > maCache[i].lastMa) : (currentBid < maCache[i].lastMa));
          
-         if(rsiCondition && adxCondition) {
+         if(rsiCondition && adxCondition && maCondition) {
             canOpenBuy = true;
          }
          if(Debug) {
-            Print(StringFormat("[%s] Buy check - Symbol: %s RSI: %f ADX: %f RSI Condition: %s ADX Condition: %s",
+            Print(StringFormat("[%s] Buy check - Symbol: %s RSI: %f ADX: %f MA: %f RSI Condition: %s ADX Condition: %s MA Condition: %s",
                TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
-               currentSymbol, rsiCache[i].lastRsi, adxCache[i].lastAdx,
+               currentSymbol, rsiCache[i].lastRsi, adxCache[i].lastAdx, maCache[i].lastMa,
                rsiCondition ? "true" : "false",
-               adxCondition ? "true" : "false"));
+               adxCondition ? "true" : "false",
+               maCondition ? "true" : "false"));
          }
       }
       
@@ -651,16 +674,18 @@ void OnTick() {
       if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
          bool rsiCondition = (RsiStrategy == RSI_REVERSAL) ? (rsiCache[i].lastRsi > RsiSellLevel) : (rsiCache[i].lastRsi < RsiBuyLevel);
          bool adxCondition = !UseAdxFilter || (adxCache[i].lastAdx > AdxThreshold);
+         bool maCondition = !UseMaFilter || (SellBelowMa ? (currentAsk < maCache[i].lastMa) : (currentAsk > maCache[i].lastMa));
          
-         if(rsiCondition && adxCondition) {
+         if(rsiCondition && adxCondition && maCondition) {
             canOpenSell = true;
          }
          if(Debug) {
-            Print(StringFormat("[%s] Sell check - Symbol: %s RSI: %f ADX: %f RSI Condition: %s ADX Condition: %s",
+            Print(StringFormat("[%s] Sell check - Symbol: %s RSI: %f ADX: %f MA: %f RSI Condition: %s ADX Condition: %s MA Condition: %s",
                TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
-               currentSymbol, rsiCache[i].lastRsi, adxCache[i].lastAdx,
+               currentSymbol, rsiCache[i].lastRsi, adxCache[i].lastAdx, maCache[i].lastMa,
                rsiCondition ? "true" : "false",
-               adxCondition ? "true" : "false"));
+               adxCondition ? "true" : "false",
+               maCondition ? "true" : "false"));
          }
       }
       
@@ -1343,12 +1368,12 @@ void UpdateInfoPanel() {
    int yStep = FontSize + 4;
    
    // Calculer la largeur nécessaire pour chaque colonne
-   int pairWidth = 10;  // Largeur pour la colonne "Pair"
-   int rsiWidth = 6;    // Largeur pour la colonne "RSI"
-   int adxWidth = 6;    // Largeur pour la colonne "ADX"
-   int plWidth = 11;    // Largeur pour la colonne "P/L"
-   int maxddWidth = 11; // Largeur pour la colonne "MaxDD"
-   int closedWidth = 11; // Largeur pour la colonne "Closed"
+   int pairWidth = 9;   // Largeur pour la colonne "Pair"
+   int rsiWidth = 5;    // Largeur pour la colonne "RSI"
+   int adxWidth = 5;    // Largeur pour la colonne "ADX"
+   int plWidth = 10;     // Largeur pour la colonne "P/L"
+   int maxddWidth = 10;  // Largeur pour la colonne "MaxDD"
+   int closedWidth = 10; // Largeur pour la colonne "Closed"
    
    // Calculer la largeur totale nécessaire
    int totalWidth = pairWidth + rsiWidth + adxWidth + plWidth + maxddWidth + closedWidth + 10; // +10 pour les séparateurs
@@ -1376,12 +1401,12 @@ void UpdateInfoPanel() {
    
    // Separator line
    string tableSeparator = StringFormat("%-*s+%*s+%*s+%*s+%*s+%*s",
-      pairWidth, "----------",
-      rsiWidth, "--------",
-      adxWidth, "--------",
-      plWidth, "--------------",
-      maxddWidth, "--------------",
-      closedWidth, "--------------");
+      pairWidth, "---------",
+      rsiWidth, "------",
+      adxWidth, "------",
+      plWidth, "---------",
+      maxddWidth, "---------",
+      closedWidth, "---------");
    
    // Limiter à 30 paires max pour l'affichage
    int maxPairs = MathMin(ArraySize(pairsArray), 30);
@@ -1402,20 +1427,24 @@ void UpdateInfoPanel() {
    UpdateLabel(prefix + "AccountInfo1", accountInfo1, x, y, TextColor);
    y += yStep;
    
-   // Ligne 2: Profit et Drawdown
+   // Ligne 2: Date et heure du broker
+   datetime brokerTime = LocalToBrokerTime(TimeCurrent());
+   string brokerDateTime = StringFormat("Broker Time: %s", TimeToString(brokerTime, TIME_DATE|TIME_MINUTES));
+   UpdateLabel(prefix + "BrokerTime", brokerDateTime, x, y, TextColor);
+   y += yStep;
+   
+   // Ligne 3: Profit et Drawdown
    double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    double currentProfit = AccountInfoDouble(ACCOUNT_PROFIT);
    double currentDrawdown = (currentBalance - currentEquity) / currentBalance * 100;
-   string accountInfo2 = StringFormat("Profit: %10.2f | DD (%%): %4.2f%% |  Max DD (%s): %10.2f", 
+   string accountInfo2 = StringFormat("Profit: %10.2f | DD (%%): %4.2f%%", 
       currentProfit, 
-      currentDrawdown,
-      accountCurrency,
-      maxTotalDD);
+      currentDrawdown);
    UpdateLabel(prefix + "AccountInfo2", accountInfo2, x, y, currentProfit > 0 ? clrLime : (currentProfit < 0 ? clrRed : TextColor));
    y += yStep;
    
-   // Ligne 3: Nombre total de positions
+   // Ligne 4: Nombre total de positions
    int totalPositions = PositionsTotal();
    string accountInfo3 = StringFormat("Total Positions: %d", totalPositions);
    UpdateLabel(prefix + "AccountInfo3", accountInfo3, x, y, TextColor);
@@ -1600,7 +1629,7 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Table header
-   string headerOther = StringFormat("%-*s | %*s | %*s | %*s | %*s | %*s",
+   string headerOther = StringFormat("%-*s | %*s | %*s | %*s | %*s | %*s | %*s",
       pairWidth, "Pair",
       rsiWidth, "RSI",
       adxWidth, "ADX",
@@ -1611,7 +1640,7 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Separator line
-   string tableSeparatorOther = StringFormat("%-*s+%*s+%*s+%*s+%*s+%*s",
+   string tableSeparatorOther = StringFormat("%-*s+%*s+%*s+%*s+%*s+%*s+%*s",
       pairWidth, "----------",
       rsiWidth, "--------",
       adxWidth, "--------",
@@ -1711,4 +1740,58 @@ void CloseAllPositions() {
          }
       }
    }
-} 
+}
+
+//+------------------------------------------------------------------+
+//| Get MA value using MT5's built-in indicator                       |
+//+------------------------------------------------------------------+
+double GetMA(string symbol, int period, ENUM_MA_METHOD method) {
+   // Check if symbol is available
+   if(!SymbolSelect(symbol, true)) {
+      return -1;
+   }
+   
+   // Get MA indicator handle
+   int maHandle = iMA(symbol, RsiTimeframe, period, 0, method, PRICE_CLOSE);
+   if(maHandle == INVALID_HANDLE) {
+      return -1;
+   }
+   
+   int maxWait = 5000; // Maximum 5 seconds
+   int waited = 0;
+   while(BarsCalculated(maHandle) < period + 1) {
+      Sleep(100);
+      waited += 100;
+      if(waited >= maxWait) {
+         IndicatorRelease(maHandle);
+         return -1;
+      }
+   }
+   
+   // Copy MA value
+   double maBuffer[];
+   ArraySetAsSeries(maBuffer, true);
+   
+   int copied = CopyBuffer(maHandle, 0, 0, period + 1, maBuffer);
+   
+   if(copied != period + 1) {
+      IndicatorRelease(maHandle);
+      return -1;
+   }
+   
+   // Check if value is valid
+   if(maBuffer[0] == 0 || maBuffer[0] == EMPTY_VALUE) {
+      IndicatorRelease(maHandle);
+      return -1;
+   }
+   
+   // Store value in cache
+   int idx = GetPairIndex(symbol);
+   if(idx >= 0) {
+      maCache[idx].lastMa = maBuffer[0];
+      maCache[idx].lastBarTime = iTime(symbol, PERIOD_CURRENT, 0);
+   }
+   
+   IndicatorRelease(maHandle);
+   return maBuffer[0];
+}
