@@ -21,16 +21,21 @@ enum ENUM_TRADE_DIRECTION {
 
 // RSI strategy type enum
 enum ENUM_RSI_STRATEGY {
-   RSI_REVERSAL,        // Reversal strategy (buy when RSI < 30, sell when RSI > 70)
-   RSI_CONTINUATION     // Continuation strategy (buy when RSI > 70, sell when RSI < 30)
+   RSI_REVERSAL,        // REVERSAL - Buy (RSI<30), sell (RSI>70)
+   RSI_CONTINUATION     // Buy (RSI>70), sell (RSI<30)
 };
 
 // Expert parameters
 input group    "=== Trading Settings ==="
-input string Pairs = "EURUSD,GBPUSD,USDJPY,AUDUSD,NZDUSD,USDCAD,USDCHF,EURGBP,EURJPY,GBPJPY,AUDJPY,NZDJPY,CADJPY,CHFJPY,EURAUD,EURNZD,EURCAD,EURCHF,GBPAUD,GBPCAD,GBPCHF,AUDCAD,AUDCHF,CADCHF,EURCHF,GBPCHF,GBPNZD,NZDCHF,NZDCAD";  // Pairs to trade
+input string Pairs = "EURUSD,GBPUSD,USDJPY,AUDUSD,NZDUSD,USDCAD,USDCHF,AUDJPY,NZDJPY,CADJPY,CHFJPY,EURAUD,EURNZD,EURCAD,EURCHF,GBPAUD,GBPCAD,GBPCHF,AUDCAD,AUDCHF,CADCHF,EURCHF,GBPCHF,NZDCHF,NZDCAD";  // Pairs to trade
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Direction
 input double   Lots = 0.1;            // Lots
 input int      Magic = 548762;         // Magic
+input int      MaxSpread = 40;         // Max spread (pips)
+input int      MaxTradesPerPair = 0;   // Max trades per pair (0 = unlimited)
+input int      MaxTotalTrades = 0;     // Max trades for all pairs (0 = unlimited)
+input int      MaxTradesPerPairPerDay = 0;  // Max trades per pair per day (0 = unlimited)
+input int      MaxTradesPerDay = 0;         // Max trades per day for all pairs (0 = unlimited)
 
 input group    "=== Time Settings ==="
 input int      TimeStartHour = 0;      // Start hour
@@ -41,12 +46,12 @@ input bool     AutoDetectBrokerOffset = true;  // Auto-detect broker time offset
 input bool     BrokerIsAheadOfGMT = false;     // Broker time is ahead of GMT (e.g. GMT+2)
 input int      ManualBrokerOffset = 3;         // Manual broker GMT offset in hours
 
-input group    "=== Entry Conditions ==="
-input int      MaxSpread = 40;         // Max spread (pips)
+input group    "=== RSI Filter ==="
 input ENUM_RSI_STRATEGY RsiStrategy = RSI_REVERSAL;  // RSI strategy type
+input ENUM_TIMEFRAMES RsiTimeframe = PERIOD_CURRENT;  // RSI timeframe
 input int      RsiPeriod = 14;         // Period
-input int      RsiBuyLevel = 30;       // Buy level
-input int      RsiSellLevel = 70;      // Sell level
+input int      RsiBuyLevel = 30;       // RSI Buy level
+input int      RsiSellLevel = 70;      // RSI ell level
 
 input group    "=== Exit Conditions ==="
 input int      TakeProfitPoints = 30;  // Take Profit
@@ -54,8 +59,7 @@ input int      TrailingStopPoints = 20;  // Trailing Stop
 input int      TrailingStartPoints = 10;  // Trailing Start
 
 input group    "=== DCA Settings ==="
-input bool     EnableMaxDCAPositions = false;  // Limit DCA
-input int      MaxDCAPositions = 100;    // Max DCA positions
+input int      MaxDCAPositions = 0;    // Max DCA positions (0 = unlimited)
 input bool     EnableLotMultiplier = true;  // Enable lot multiplier for DCA
 input double   LotMultiplier = 1.5;      // DCA lot multiplier
 input double   MaxLotEntry = 1;        // Maximum lot size for DCA entries
@@ -65,7 +69,6 @@ input bool     Info = true;            // Show panel
 input ENUM_BASE_CORNER PanelCorner = CORNER_LEFT_UPPER;  // Corner
 input int      PanelXDistance = 20;    // X distance
 input int      PanelYDistance = 20;    // Y distance
-input int      PanelWidth = 500;       // Panel width
 input int      FontSize = 12;          // Font size
 input color    TextColor = clrWhite;   // Text color
 
@@ -83,6 +86,7 @@ double maxBuyDD = 0;
 double maxSellDD = 0;
 double maxTotalDD = 0;
 string pairsArray[];  // Array to store currency pairs
+string accountCurrency = "";      // Currency of the trading account
 MqlDateTime timeStruct;
 datetime currentTime;
 double currentSpread;
@@ -104,7 +108,7 @@ double sellLots = 0;
 double currentBuyDD = 0;
 double currentSellDD = 0;
 double currentTotalDD = 0;
-int panelWidth = PanelWidth;  // Using input parameter
+const int PanelWidth = 1200;  // Panel width constant
 
 // Structure to store position information
 struct PositionInfo {
@@ -115,6 +119,8 @@ struct PositionInfo {
    double currentDD;
    double maxDD;
    double closedProfit;
+   double initialBalance;  // Ajout du solde initial par paire
+   double maxProfit;      // Ajout du profit maximum par paire
 };
 
 // Tableaux pour le suivi par paire
@@ -132,6 +138,9 @@ RsiCache rsiCache[100]; // 100 paires max
 datetime lastPanelUpdate = 0;
 datetime lastStatsUpdate = 0;
 datetime lastBarTimeGlobal = 0;
+int dailyTradesPerPair[100];        // Trades count per pair for current day
+int totalDailyTrades = 0;           // Total trades for current day
+datetime lastDayReset = 0;          // Last day reset time
 
 //+------------------------------------------------------------------+
 //| Detect broker time offset automatically                           |
@@ -176,7 +185,7 @@ double GetRSI(string symbol, int period, ENUM_APPLIED_PRICE price) {
    }
    
    // Get RSI indicator handle
-   int rsiHandle = iRSI(symbol, PERIOD_CURRENT, period, price);
+   int rsiHandle = iRSI(symbol, RsiTimeframe, period, price);
    if(rsiHandle == INVALID_HANDLE) {
       return -1;
    }
@@ -380,7 +389,7 @@ int OnInit() {
    }
    
    // Validate DCA parameters
-   if(MaxDCAPositions <= 0) {
+   if(MaxDCAPositions < 0) {
       return INIT_PARAMETERS_INCORRECT;
    }
    
@@ -391,6 +400,45 @@ int OnInit() {
    maxSellDD = 0;
    maxTotalDD = 0;
    
+   // Get account currency
+   accountCurrency = AccountInfoString(ACCOUNT_CURRENCY);
+   if(accountCurrency == "") accountCurrency = "USD";  // Default to USD if not available
+   
+   // Set chart colors to black
+   // ChartSetInteger(0, CHART_COLOR_BACKGROUND, clrBlack);     // Set background color to black
+   // ChartSetInteger(0, CHART_COLOR_FOREGROUND, clrBlack);     // Set text and scale color to black
+   // ChartSetInteger(0, CHART_COLOR_GRID, clrBlack);          // Set grid color to black
+   // ChartSetInteger(0, CHART_COLOR_CHART_UP, clrBlack);      // Set bullish candle color to black
+   // ChartSetInteger(0, CHART_COLOR_CHART_DOWN, clrBlack);    // Set bearish candle color to black
+   // ChartSetInteger(0, CHART_COLOR_CHART_LINE, clrBlack);    // Set chart line color to black
+   // ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, clrBlack);   // Set bullish candle body color to black
+   // ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, clrBlack);   // Set bearish candle body color to black
+   // ChartSetInteger(0, CHART_COLOR_BID, clrBlack);           // Set bid line color to black
+   // ChartSetInteger(0, CHART_COLOR_ASK, clrBlack);           // Set ask line color to black
+   // ChartSetInteger(0, CHART_COLOR_LAST, clrBlack);          // Set last price line color to black
+   // ChartSetInteger(0, CHART_COLOR_STOP_LEVEL, clrBlack);    // Set stop levels color to black
+   // ChartSetInteger(0, CHART_SHOW_GRID, false);              // Hide grid
+   // ChartSetInteger(0, CHART_SHOW_VOLUMES, false);           // Hide volumes
+   // ChartSetInteger(0, CHART_SHOW_PERIOD_SEP, false);        // Hide period separators
+   // ChartSetInteger(0, CHART_SHOW_OHLC, false);              // Hide OHLC values
+   // ChartSetInteger(0, CHART_SHOW_ASK_LINE, false);          // Hide ask line
+   // ChartSetInteger(0, CHART_SHOW_BID_LINE, false);          // Hide bid line
+   // ChartSetInteger(0, CHART_SHOW_LAST_LINE, false);         // Hide last price line
+   // ChartSetInteger(0, CHART_SHOW_OBJECT_DESCR, false);      // Hide object descriptions
+   // ChartSetInteger(0, CHART_COLOR_VOLUME, clrBlack);        // Set volume color to black
+   // ChartSetInteger(0, CHART_COLOR_STOP_LEVEL, clrBlack);    // Set stop levels color to black
+   // ChartSetInteger(0, CHART_COLOR_STOP_LEVEL, clrBlack);    // Set take profit levels color to black
+   // ChartSetInteger(0, CHART_COLOR_STOP_LEVEL, clrBlack);    // Set modification levels color to black
+   
+   // Désactiver le défilement automatique et le décalage
+   // ChartSetInteger(0, CHART_AUTOSCROLL, false);             // Désactiver le défilement automatique
+   // ChartSetInteger(0, CHART_SHIFT, false);                  // Désactiver le décalage
+   
+   // Masquer l'historique de trading
+   // ChartSetInteger(0, CHART_SHOW_TRADE_HISTORY, false);     // Cacher l'historique de trading
+   // ChartSetInteger(0, CHART_SHOW_TRADE_LEVELS, false);      // Cacher les niveaux de trading
+   // ChartSetInteger(0, CHART_SHOW_OBJECT_DESCR, false);      // Cacher les descriptions des objets
+   
    return(INIT_SUCCEEDED);
 }
 
@@ -398,7 +446,34 @@ int OnInit() {
 //| Expert deinitialization function                                   |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason) {
+   // Delete EA objects
    ObjectsDeleteAll(0, "EA_Info_");
+   
+   // Restore default chart colors
+   ChartSetInteger(0, CHART_COLOR_BACKGROUND, clrWhite);
+   ChartSetInteger(0, CHART_COLOR_FOREGROUND, clrBlack);
+   ChartSetInteger(0, CHART_COLOR_GRID, clrLightGray);
+   ChartSetInteger(0, CHART_COLOR_CHART_UP, clrBlack);
+   ChartSetInteger(0, CHART_COLOR_CHART_DOWN, clrBlack);
+   ChartSetInteger(0, CHART_COLOR_CHART_LINE, clrBlack);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, clrWhite);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, clrBlack);
+   ChartSetInteger(0, CHART_COLOR_BID, clrLightSlateGray);
+   ChartSetInteger(0, CHART_COLOR_ASK, clrLightSlateGray);
+   ChartSetInteger(0, CHART_COLOR_LAST, clrLightSlateGray);
+   ChartSetInteger(0, CHART_COLOR_STOP_LEVEL, clrRed);
+   ChartSetInteger(0, CHART_SHOW_GRID, true);
+   ChartSetInteger(0, CHART_SHOW_VOLUMES, true);
+   ChartSetInteger(0, CHART_SHOW_PERIOD_SEP, true);
+   ChartSetInteger(0, CHART_SHOW_OHLC, true);
+   ChartSetInteger(0, CHART_SHOW_ASK_LINE, true);
+   ChartSetInteger(0, CHART_SHOW_BID_LINE, true);
+   ChartSetInteger(0, CHART_SHOW_LAST_LINE, true);
+   ChartSetInteger(0, CHART_SHOW_OBJECT_DESCR, true);
+   ChartSetInteger(0, CHART_COLOR_VOLUME, clrGreen);
+   ChartSetInteger(0, CHART_COLOR_STOP_LEVEL, clrRed);      // Restaurer la couleur des stops
+   ChartSetInteger(0, CHART_COLOR_STOP_LEVEL, clrLime);     // Restaurer la couleur des take profits
+   ChartSetInteger(0, CHART_COLOR_STOP_LEVEL, clrBlue);     // Restaurer la couleur des modifications
 }
 
 //+------------------------------------------------------------------+
@@ -490,14 +565,112 @@ void OnTick() {
 }
 
 //+------------------------------------------------------------------+
+//| Reset daily trade counters                                        |
+//+------------------------------------------------------------------+
+void ResetDailyCounters() {
+   // Use global variables instead of declaring new ones
+   currentTime = TimeCurrent();
+   TimeToStruct(currentTime, timeStruct);
+   
+   // Check if it's a new day
+   MqlDateTime lastDayStruct;
+   TimeToStruct(lastDayReset, lastDayStruct);
+   
+   if(timeStruct.day != lastDayStruct.day) {
+      // Reset counters
+      ArrayInitialize(dailyTradesPerPair, 0);
+      totalDailyTrades = 0;
+      lastDayReset = currentTime;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check if we can open a new trade                                  |
+//+------------------------------------------------------------------+
+bool CanOpenNewTrade(string symbol, int pairIndex) {
+   // Reset daily counters if needed
+   ResetDailyCounters();
+   
+   // Check pair limit
+   if(MaxTradesPerPair > 0) {
+      int currentPairTrades = CountPositions(symbol, POSITION_TYPE_BUY) + CountPositions(symbol, POSITION_TYPE_SELL);
+      if(currentPairTrades >= MaxTradesPerPair) {
+         if(Debug) {
+            Print(StringFormat("[%s] Pair limit reached - Symbol: %s Current Trades: %d",
+               TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+               symbol, currentPairTrades));
+         }
+         return false;
+      }
+   }
+   
+   // Check total trades limit
+   if(MaxTotalTrades > 0) {
+      int totalTrades = 0;
+      for(int i = 0; i < ArraySize(pairsArray); i++) {
+         totalTrades += CountPositions(pairsArray[i], POSITION_TYPE_BUY) + CountPositions(pairsArray[i], POSITION_TYPE_SELL);
+      }
+      if(totalTrades >= MaxTotalTrades) {
+         if(Debug) {
+            Print(StringFormat("[%s] Total trades limit reached - Total Trades: %d",
+               TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+               totalTrades));
+         }
+         return false;
+      }
+   }
+   
+   // Check pair daily limit
+   if(MaxTradesPerPairPerDay > 0 && dailyTradesPerPair[pairIndex] >= MaxTradesPerPairPerDay) {
+      if(Debug) {
+         Print(StringFormat("[%s] Pair daily limit reached - Symbol: %s Daily Trades: %d",
+            TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+            symbol, dailyTradesPerPair[pairIndex]));
+      }
+      return false;
+   }
+   
+   // Check total daily limit
+   if(MaxTradesPerDay > 0 && totalDailyTrades >= MaxTradesPerDay) {
+      if(Debug) {
+         Print(StringFormat("[%s] Total daily limit reached - Total Daily Trades: %d",
+            TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+            totalDailyTrades));
+      }
+      return false;
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Update trade counters after opening a trade                       |
+//+------------------------------------------------------------------+
+void UpdateTradeCounters(int pairIndex) {
+   dailyTradesPerPair[pairIndex]++;
+   totalDailyTrades++;
+}
+
+//+------------------------------------------------------------------+
 //| Open Buy Order                                                     |
 //+------------------------------------------------------------------+
 void OpenBuyOrder(string symbol, int idx) {
    if(TradeDirection == TRADE_SELL_ONLY) return;
+   
+   // Check daily trade limits
+   if(!CanOpenNewTrade(symbol, idx)) {
+      if(Debug) {
+         Print(StringFormat("[%s] Trade limit reached - Symbol: %s Daily Trades: %d Total Daily Trades: %d",
+            TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+            symbol, dailyTradesPerPair[idx], totalDailyTrades));
+      }
+      return;
+   }
+   
    int buyPositions = CountPositions(symbol, POSITION_TYPE_BUY);
    PositionInfo buyInfo = buyInfoArray[idx];
    double localRsi = rsiCache[idx].lastRsi;
-   if(!EnableMaxDCAPositions || buyPositions < MaxDCAPositions) {
+   if(MaxDCAPositions == 0 || buyPositions < MaxDCAPositions) {
       int positionsInCurrentBar = CountPositionsInCurrentBar(symbol, POSITION_TYPE_BUY);
       if(positionsInCurrentBar == 0) {
          double localPoint = SymbolInfoDouble(symbol, SYMBOL_POINT);
@@ -521,6 +694,9 @@ void OpenBuyOrder(string symbol, int idx) {
          if(!trade.Buy(currentLots, symbol, ask, 0, 0, expertName)) {
             status = "FAIL";
             extra = IntegerToString(GetLastError());
+         } else {
+            // Update trade counters after successful trade
+            UpdateTradeCounters(idx);
          }
          LogInfo(symbol, "BUY", localRsi, "B", currentLots, buyPositions, profit, sprd, status, extra);
       }
@@ -537,10 +713,21 @@ void OpenBuyOrder(string symbol, int idx) {
 //+------------------------------------------------------------------+
 void OpenSellOrder(string symbol, int idx) {
    if(TradeDirection == TRADE_BUY_ONLY) return;
+   
+   // Check daily trade limits
+   if(!CanOpenNewTrade(symbol, idx)) {
+      if(Debug) {
+         Print(StringFormat("[%s] Trade limit reached - Symbol: %s Daily Trades: %d Total Daily Trades: %d",
+            TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+            symbol, dailyTradesPerPair[idx], totalDailyTrades));
+      }
+      return;
+   }
+   
    int sellPositions = CountPositions(symbol, POSITION_TYPE_SELL);
    PositionInfo sellInfo = sellInfoArray[idx];
    double localRsi = rsiCache[idx].lastRsi;
-   if(!EnableMaxDCAPositions || sellPositions < MaxDCAPositions) {
+   if(MaxDCAPositions == 0 || sellPositions < MaxDCAPositions) {
       int positionsInCurrentBar = CountPositionsInCurrentBar(symbol, POSITION_TYPE_SELL);
       if(positionsInCurrentBar == 0) {
          double localPoint = SymbolInfoDouble(symbol, SYMBOL_POINT);
@@ -564,6 +751,9 @@ void OpenSellOrder(string symbol, int idx) {
          if(!trade.Sell(currentLots, symbol, bid, 0, 0, expertName)) {
             status = "FAIL";
             extra = IntegerToString(GetLastError());
+         } else {
+            // Update trade counters after successful trade
+            UpdateTradeCounters(idx);
          }
          LogInfo(symbol, "SELL", localRsi, "S", currentLots, sellPositions, profit, sprd, status, extra);
       }
@@ -622,8 +812,13 @@ void CalculatePositionInfo(string symbol, ENUM_POSITION_TYPE positionType, Posit
    info.totalProfit = 0;
    info.currentDD = 0;
    info.closedProfit = 0;
+   info.maxProfit = 0;
    
-   double maxProfit = 0;
+   // Si c'est la première fois qu'on calcule pour cette paire, initialiser le solde
+   if(info.initialBalance == 0) {
+      info.initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   }
+   
    double currentProfit = 0;
    
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
@@ -635,11 +830,13 @@ void CalculatePositionInfo(string symbol, ENUM_POSITION_TYPE positionType, Posit
             currentProfit = PositionGetDouble(POSITION_PROFIT);
             info.totalProfit += currentProfit;
             
-            if(currentProfit > maxProfit) {
-               maxProfit = currentProfit;
+            // Mettre à jour le profit maximum
+            if(info.totalProfit > info.maxProfit) {
+               info.maxProfit = info.totalProfit;
             }
             
-            double currentDD = maxProfit - currentProfit;
+            // Calculer le drawdown actuel
+            double currentDD = info.maxProfit - info.totalProfit;
             if(currentDD > info.currentDD) {
                info.currentDD = currentDD;
             }
@@ -684,21 +881,20 @@ void UpdatePositionStatistics() {
       // Update total profit
       totalProfit += buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit;
       
-      // Update max drawdown for each pair
-      if(buyInfoArray[i].currentDD > buyInfoArray[i].maxDD) {
-         buyInfoArray[i].maxDD = buyInfoArray[i].currentDD;
-      }
-      if(sellInfoArray[i].currentDD > sellInfoArray[i].maxDD) {
-         sellInfoArray[i].maxDD = sellInfoArray[i].currentDD;
+      // Calculer le drawdown total pour cette paire
+      double pairTotalProfit = buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit;
+      double pairMaxProfit = MathMax(buyInfoArray[i].maxProfit, sellInfoArray[i].maxProfit);
+      double pairCurrentDD = pairMaxProfit - pairTotalProfit;
+      
+      // Mettre à jour le drawdown total si nécessaire
+      if(pairCurrentDD > currentTotalDD) {
+         currentTotalDD = pairCurrentDD;
       }
    }
    
-   // Calculate total drawdown
-   if(totalProfit < 0) {
-      currentTotalDD = MathAbs(totalProfit) / initialBalance * 100;
-      if(currentTotalDD > maxTotalDD) {
-         maxTotalDD = currentTotalDD;
-      }
+   // Mettre à jour le maxTotalDD uniquement si le drawdown actuel est supérieur
+   if(currentTotalDD > maxTotalDD) {
+      maxTotalDD = currentTotalDD;
    }
 }
 
@@ -959,6 +1155,27 @@ void UpdateLabel(string name, string text, int x, int y, color clr) {
 }
 
 //+------------------------------------------------------------------+
+//| Create Label for Info Panel                                        |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, string text, int x, int y, color clr) {
+   if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0)) {
+      return;
+   }
+   
+   ObjectSetInteger(0, name, OBJPROP_CORNER, PanelCorner);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, PanelCorner);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, FontSize);
+   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");  // Using fixed-width font for better table alignment
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);  // Make sure labels are visible
+   ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+}
+
+//+------------------------------------------------------------------+
 //| Update Info Panel                                                  |
 //+------------------------------------------------------------------+
 void UpdateInfoPanel() {
@@ -968,6 +1185,43 @@ void UpdateInfoPanel() {
    int x = PanelXDistance;
    int y = PanelYDistance;
    int yStep = FontSize + 4;
+   
+   // Calculer la largeur nécessaire pour chaque colonne
+   int pairWidth = 10;  // Largeur pour la colonne "Pair"
+   int rsiWidth = 6;    // Largeur pour la colonne "RSI"
+   int plWidth = 11;    // Largeur pour la colonne "P/L"
+   int maxddWidth = 11; // Largeur pour la colonne "MaxDD"
+   int closedWidth = 11; // Largeur pour la colonne "Closed"
+   
+   // Calculer la largeur totale nécessaire
+   int totalWidth = pairWidth + rsiWidth + plWidth + maxddWidth + closedWidth + 8; // +8 pour les séparateurs
+   
+   // Ajuster la largeur du panneau si nécessaire
+   if(totalWidth * FontSize > PanelWidth) {
+      // Réduire proportionnellement la largeur de chaque colonne
+      double scaleFactor = (double)PanelWidth / (totalWidth * FontSize);
+      pairWidth = (int)(pairWidth * scaleFactor);
+      rsiWidth = (int)(rsiWidth * scaleFactor);
+      plWidth = (int)(plWidth * scaleFactor);
+      maxddWidth = (int)(maxddWidth * scaleFactor);
+      closedWidth = (int)(closedWidth * scaleFactor);
+   }
+   
+   // Table header
+   string header = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+      pairWidth, "Pair",
+      rsiWidth, "RSI",
+      plWidth, "P/L",
+      maxddWidth, StringFormat("MaxDD(%s)", accountCurrency),
+      closedWidth, "Closed");
+   
+   // Separator line
+   string tableSeparator = StringFormat("%-*s+%*s+%*s+%*s+%*s",
+      pairWidth, "----------",
+      rsiWidth, "--------",
+      plWidth, "--------------",
+      maxddWidth, "--------------",
+      closedWidth, "--------------");
    
    // Limiter à 30 paires max pour l'affichage
    int maxPairs = MathMin(ArraySize(pairsArray), 30);
@@ -984,13 +1238,21 @@ void UpdateInfoPanel() {
    double drawdown = (balance - equity) / balance * 100;
    
    // Ligne 1: Balance et Equity
-   string accountInfo1 = StringFormat("Balance: %.2f | Equity: %.2f", balance, equity);
+   string accountInfo1 = StringFormat("Balance: %12.2f | Equity: %12.2f", balance, equity);
    UpdateLabel(prefix + "AccountInfo1", accountInfo1, x, y, TextColor);
    y += yStep;
    
    // Ligne 2: Profit et Drawdown
-   string accountInfo2 = StringFormat("Profit: %.2f | DD: %.2f%% | Max DD: %.2f%%", profit, drawdown, maxTotalDD);
-   UpdateLabel(prefix + "AccountInfo2", accountInfo2, x, y, profit > 0 ? clrLime : (profit < 0 ? clrRed : TextColor));
+   double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double currentProfit = AccountInfoDouble(ACCOUNT_PROFIT);
+   double currentDrawdown = (currentBalance - currentEquity) / currentBalance * 100;
+   string accountInfo2 = StringFormat("Profit: %10.2f | DD (%%): %4.2f%% |  Max DD (%s): %10.2f", 
+      currentProfit, 
+      currentDrawdown,
+      accountCurrency,
+      maxTotalDD);
+   UpdateLabel(prefix + "AccountInfo2", accountInfo2, x, y, currentProfit > 0 ? clrLime : (currentProfit < 0 ? clrRed : TextColor));
    y += yStep;
    
    // Ligne 3: Nombre total de positions
@@ -1000,7 +1262,7 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Ligne séparatrice
-   string separator = "----------------------------------------";
+   string separator = "------------------------------------------------------------";
    UpdateLabel(prefix + "Separator1", separator, x, y, TextColor);
    y += yStep;
    
@@ -1018,15 +1280,23 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Table header
-   string header = StringFormat("%-10s | %6s | %7s | %6s | %9s | %9s",
-      "Pair", "RSI", "P/L", "DD", "Max DD", "Closed");
-   UpdateLabel(prefix + "UsdQuoteHeader", header, x, y, TextColor);
+   string headerUsdQuote = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+      pairWidth, "Pair",
+      rsiWidth, "RSI",
+      plWidth, "P/L",
+      maxddWidth, StringFormat("MaxDD(%s)", accountCurrency),
+      closedWidth, "Closed");
+   UpdateLabel(prefix + "UsdQuoteHeader", headerUsdQuote, x, y, TextColor);
    y += yStep;
    
    // Separator line
-   string tableSeparator = StringFormat("%s",
-      "----------+--------+---------+--------+-----------+-----------");
-   UpdateLabel(prefix + "UsdQuoteTableSeparator", tableSeparator, x, y, TextColor);
+   string tableSeparatorUsdQuote = StringFormat("%-*s+%*s+%*s+%*s+%*s",
+      pairWidth, "----------",
+      rsiWidth, "--------",
+      plWidth, "--------------",
+      maxddWidth, "--------------",
+      closedWidth, "--------------");
+   UpdateLabel(prefix + "UsdQuoteTableSeparator", tableSeparatorUsdQuote, x, y, TextColor);
    y += yStep;
    
    // Display information for each XXX/USD pair
@@ -1061,12 +1331,12 @@ void UpdateInfoPanel() {
          double currentRsi = GetRSI(symbol, RsiPeriod, PRICE_CLOSE);
          
          // Create line for this pair
-         string line = StringFormat("%-10s | %6.2f | %7.2f | %6.2f | %9.2f | %9.2f",
-            symbol, currentRsi,
-            buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit,
-            buyInfoArray[i].currentDD + sellInfoArray[i].currentDD,
-            MathMax(buyInfoArray[i].maxDD, sellInfoArray[i].maxDD),
-            buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit);
+         string line = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+            pairWidth, symbol,
+            rsiWidth, DoubleToString(NormalizeDouble(currentRsi, 2), 2),
+            plWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit, 2), 2),
+            maxddWidth, DoubleToString(NormalizeDouble(-MathMax(buyInfoArray[i].maxDD, sellInfoArray[i].maxDD), 2), 2),
+            closedWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit, 2), 2));
          
          // Determine color based on total profit
          double totalPairProfit = buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit + buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit;
@@ -1074,6 +1344,10 @@ void UpdateInfoPanel() {
          
          UpdateLabel(prefix + "UsdQuote_" + IntegerToString(i), line, x, y, lineColor);
          y += yStep;
+         
+         if(Debug) {
+            Print("Pair: ", symbol, " Buy Closed: ", buyInfoArray[i].closedProfit, " Sell Closed: ", sellInfoArray[i].closedProfit);
+         }
       }
    }
    
@@ -1085,11 +1359,23 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Table header
-   UpdateLabel(prefix + "UsdBaseHeader", header, x, y, TextColor);
+   string headerUsdBase = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+      pairWidth, "Pair",
+      rsiWidth, "RSI",
+      plWidth, "P/L",
+      maxddWidth, StringFormat("MaxDD(%s)", accountCurrency),
+      closedWidth, "Closed");
+   UpdateLabel(prefix + "UsdBaseHeader", headerUsdBase, x, y, TextColor);
    y += yStep;
    
    // Separator line
-   UpdateLabel(prefix + "UsdBaseTableSeparator", tableSeparator, x, y, TextColor);
+   string tableSeparatorUsdBase = StringFormat("%-*s+%*s+%*s+%*s+%*s",
+      pairWidth, "----------",
+      rsiWidth, "--------",
+      plWidth, "--------------",
+      maxddWidth, "--------------",
+      closedWidth, "--------------");
+   UpdateLabel(prefix + "UsdBaseTableSeparator", tableSeparatorUsdBase, x, y, TextColor);
    y += yStep;
    
    // Display information for each USD/XXX pair
@@ -1124,12 +1410,12 @@ void UpdateInfoPanel() {
          double currentRsi = GetRSI(symbol, RsiPeriod, PRICE_CLOSE);
          
          // Create line for this pair
-         string line = StringFormat("%-10s | %6.2f | %7.2f | %6.2f | %9.2f | %9.2f",
-            symbol, currentRsi,
-            buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit,
-            buyInfoArray[i].currentDD + sellInfoArray[i].currentDD,
-            MathMax(buyInfoArray[i].maxDD, sellInfoArray[i].maxDD),
-            buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit);
+         string line = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+            pairWidth, symbol,
+            rsiWidth, DoubleToString(NormalizeDouble(currentRsi, 2), 2),
+            plWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit, 2), 2),
+            maxddWidth, DoubleToString(NormalizeDouble(-MathMax(buyInfoArray[i].maxDD, sellInfoArray[i].maxDD), 2), 2),
+            closedWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit, 2), 2));
          
          // Determine color based on total profit
          double totalPairProfit = buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit + buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit;
@@ -1148,11 +1434,23 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Table header
-   UpdateLabel(prefix + "OtherPairsHeader", header, x, y, TextColor);
+   string headerOther = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+      pairWidth, "Pair",
+      rsiWidth, "RSI",
+      plWidth, "P/L",
+      maxddWidth, StringFormat("MaxDD(%s)", accountCurrency),
+      closedWidth, "Closed");
+   UpdateLabel(prefix + "OtherPairsHeader", headerOther, x, y, TextColor);
    y += yStep;
    
    // Separator line
-   UpdateLabel(prefix + "OtherPairsTableSeparator", tableSeparator, x, y, TextColor);
+   string tableSeparatorOther = StringFormat("%-*s+%*s+%*s+%*s+%*s",
+      pairWidth, "----------",
+      rsiWidth, "--------",
+      plWidth, "--------------",
+      maxddWidth, "--------------",
+      closedWidth, "--------------");
+   UpdateLabel(prefix + "OtherPairsTableSeparator", tableSeparatorOther, x, y, TextColor);
    y += yStep;
    
    // Display information for other pairs
@@ -1187,12 +1485,12 @@ void UpdateInfoPanel() {
          double currentRsi = GetRSI(symbol, RsiPeriod, PRICE_CLOSE);
          
          // Create line for this pair
-         string line = StringFormat("%-10s | %6.2f | %7.2f | %6.2f | %9.2f | %9.2f",
-            symbol, currentRsi,
-            buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit,
-            buyInfoArray[i].currentDD + sellInfoArray[i].currentDD,
-            MathMax(buyInfoArray[i].maxDD, sellInfoArray[i].maxDD),
-            buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit);
+         string line = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+            pairWidth, symbol,
+            rsiWidth, DoubleToString(NormalizeDouble(currentRsi, 2), 2),
+            plWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit, 2), 2),
+            maxddWidth, DoubleToString(NormalizeDouble(-MathMax(buyInfoArray[i].maxDD, sellInfoArray[i].maxDD), 2), 2),
+            closedWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit, 2), 2));
          
          // Determine color based on total profit
          double totalPairProfit = buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit + buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit;
@@ -1211,7 +1509,7 @@ void UpdateInfoPanel() {
       globalClosed += buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit;
    }
    y += yStep; // espace
-   string totalLine = StringFormat("TOTAL P/L: %.2f   |   CLOSED TOTAL: %.2f", globalPL, globalClosed);
+   string totalLine = StringFormat("TOTAL P/L: %12.2f   |   CLOSED TOTAL: %12.2f", globalPL, globalClosed);
    double globalTotal = globalPL + globalClosed;
    UpdateLabel(prefix + "GlobalTotalPL", totalLine, x, y, globalTotal > 0 ? clrLime : (globalTotal < 0 ? clrRed : TextColor));
    y += yStep;
@@ -1224,27 +1522,6 @@ void UpdateInfoPanel() {
    
    // Forcer le redessinage du graphique
    ChartRedraw();
-}
-
-//+------------------------------------------------------------------+
-//| Create Label for Info Panel                                        |
-//+------------------------------------------------------------------+
-void CreateLabel(string name, string text, int x, int y, color clr) {
-   if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0)) {
-      return;
-   }
-   
-   ObjectSetInteger(0, name, OBJPROP_CORNER, PanelCorner);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, PanelCorner);
-   ObjectSetString(0, name, OBJPROP_TEXT, text);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, FontSize);
-   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");  // Using fixed-width font for better table alignment
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);  // Make sure labels are visible
-   ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
 }
 
 // Fonction de log universel
