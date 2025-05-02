@@ -27,7 +27,7 @@ enum ENUM_RSI_STRATEGY {
 
 // Expert parameters
 input group    "=== Trading Settings ==="
-input string Pairs = "EURUSD,GBPUSD,USDJPY,AUDUSD,NZDUSD,USDCAD,USDCHF,AUDJPY,NZDJPY,CADJPY,CHFJPY,EURAUD,EURNZD,EURCAD,EURCHF,GBPAUD,GBPCAD,GBPCHF,AUDCAD,AUDCHF,CADCHF,EURCHF,GBPCHF,NZDCHF,NZDCAD";  // Pairs to trade
+input string Pairs = "EURUSD,GBPUSD,USDJPY,AUDUSD,NZDUSD,USDCAD,USDCHF,AUDJPY,NZDJPY,CADJPY,CHFJPY,EURAUD,EURNZD,EURCAD,EURCHF,GBPCAD,GBPCHF,AUDCAD,AUDCHF,CADCHF,EURCHF,GBPCHF,NZDCHF,NZDCAD";  // Pairs to trade
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Direction
 input double   Lots = 0.1;            // Lots
 input int      Magic = 548762;         // Magic
@@ -36,6 +36,7 @@ input int      MaxTradesPerPair = 0;   // Max trades per pair (0 = unlimited)
 input int      MaxTotalTrades = 0;     // Max trades for all pairs (0 = unlimited)
 input int      MaxTradesPerPairPerDay = 0;  // Max trades per pair per day (0 = unlimited)
 input int      MaxTradesPerDay = 0;         // Max trades per day for all pairs (0 = unlimited)
+input int      MaxActivePairs = 0;     // Max active pairs (0 = unlimited)
 
 input group    "=== Time Settings ==="
 input int      TimeStartHour = 0;      // Start hour
@@ -51,7 +52,12 @@ input ENUM_RSI_STRATEGY RsiStrategy = RSI_REVERSAL;  // RSI strategy type
 input ENUM_TIMEFRAMES RsiTimeframe = PERIOD_CURRENT;  // RSI timeframe
 input int      RsiPeriod = 14;         // Period
 input int      RsiBuyLevel = 30;       // RSI Buy level
-input int      RsiSellLevel = 70;      // RSI ell level
+input int      RsiSellLevel = 70;      // RSI Sell level
+
+input group    "=== ADX Filter ==="
+input int      AdxPeriod = 14;         // ADX Period
+input double   AdxThreshold = 25;      // ADX Threshold
+input bool     UseAdxFilter = true;    // Enable ADX Filter
 
 input group    "=== Exit Conditions ==="
 input int      TakeProfitPoints = 30;  // Take Profit
@@ -75,6 +81,12 @@ input color    TextColor = clrWhite;   // Text color
 input group    "=== Debug Settings ==="
 input bool     Debug = false;          // Show debug logs
 input int      InfoPanelRefreshSec = 5; // Info panel refresh (sec)
+
+input group    "=== Risk Management ==="
+input bool     EnableMaxDrawdown = false;    // Enable max drawdown protection
+input double   MaxDrawdownPercent = 30.0;    // Max drawdown before stopping new trades (%)
+input bool     CloseAllOnEmergency = false;  // Close all trades on emergency drawdown
+input double   EmergencyDrawdownPercent = 1.0;  // Emergency drawdown to close all trades (%)
 
 // Global variables
 CTrade trade;
@@ -128,12 +140,21 @@ PositionInfo buyInfoArray[100];
 PositionInfo sellInfoArray[100];
 double totalClosedProfit = 0;  // Profit total des trades fermés pour le compte
 
+// Structure pour le cache ADX
+struct AdxCache {
+   datetime lastBarTime;
+   double lastAdx;
+   double lastPlusDI;
+   double lastMinusDI;
+};
+
 // Variables pour cache RSI par symbole
 struct RsiCache {
    datetime lastBarTime;
    double lastRsi;
 };
 RsiCache rsiCache[100]; // 100 paires max
+AdxCache adxCache[100]; // 100 paires max
 
 datetime lastPanelUpdate = 0;
 datetime lastStatsUpdate = 0;
@@ -232,6 +253,83 @@ double GetRSI(string symbol, int period, ENUM_APPLIED_PRICE price) {
    double rsiValue = rsiBuffer[0];
    IndicatorRelease(rsiHandle);
    return rsiValue;
+}
+
+//+------------------------------------------------------------------+
+//| Get ADX value using MT5's built-in indicator                      |
+//+------------------------------------------------------------------+
+double GetADX(string symbol, int period) {
+   // Check if symbol is available
+   if(!SymbolSelect(symbol, true)) {
+      return -1;
+   }
+   
+   // Get ADX indicator handle
+   int adxHandle = iADX(symbol, RsiTimeframe, period);
+   if(adxHandle == INVALID_HANDLE) {
+      return -1;
+   }
+   
+   int maxWait = 5000; // Maximum 5 seconds
+   int waited = 0;
+   while(BarsCalculated(adxHandle) < period + 1) {
+      Sleep(100);
+      waited += 100;
+      if(waited >= maxWait) {
+         IndicatorRelease(adxHandle);
+         return -1;
+      }
+   }
+   
+   // Copy ADX values
+   double adxBuffer[];
+   double plusDIBuffer[];
+   double minusDIBuffer[];
+   
+   ArraySetAsSeries(adxBuffer, true);
+   ArraySetAsSeries(plusDIBuffer, true);
+   ArraySetAsSeries(minusDIBuffer, true);
+   
+   int copied = CopyBuffer(adxHandle, 0, 0, period + 1, adxBuffer);
+   int copiedPlus = CopyBuffer(adxHandle, 1, 0, period + 1, plusDIBuffer);
+   int copiedMinus = CopyBuffer(adxHandle, 2, 0, period + 1, minusDIBuffer);
+   
+   if(copied != period + 1 || copiedPlus != period + 1 || copiedMinus != period + 1) {
+      IndicatorRelease(adxHandle);
+      return -1;
+   }
+   
+   // Check if values are valid
+   if(adxBuffer[0] == 0 || adxBuffer[0] == EMPTY_VALUE ||
+      plusDIBuffer[0] == 0 || plusDIBuffer[0] == EMPTY_VALUE ||
+      minusDIBuffer[0] == 0 || minusDIBuffer[0] == EMPTY_VALUE) {
+      IndicatorRelease(adxHandle);
+      return -1;
+   }
+   
+   // Store values in cache
+   int idx = GetPairIndex(symbol);
+   if(idx >= 0) {
+      adxCache[idx].lastAdx = adxBuffer[0];
+      adxCache[idx].lastPlusDI = plusDIBuffer[0];
+      adxCache[idx].lastMinusDI = minusDIBuffer[0];
+      adxCache[idx].lastBarTime = iTime(symbol, PERIOD_CURRENT, 0);
+   }
+   
+   IndicatorRelease(adxHandle);
+   return adxBuffer[0];
+}
+
+//+------------------------------------------------------------------+
+//| Get pair index from pairs array                                   |
+//+------------------------------------------------------------------+
+int GetPairIndex(string symbol) {
+   for(int i = 0; i < ArraySize(pairsArray); i++) {
+      if(pairsArray[i] == symbol) {
+         return i;
+      }
+   }
+   return -1;
 }
 
 //+------------------------------------------------------------------+
@@ -521,36 +619,48 @@ void OnTick() {
       canOpenBuy = false;
       canOpenSell = false;
       
-      // RSI cache par symbole - calculé une seule fois par bougie
+      // RSI et ADX cache par symbole - calculé une seule fois par bougie
       datetime barTime = iTime(currentSymbol, PERIOD_CURRENT, 0);
       if(rsiCache[i].lastBarTime != barTime) {
          rsiCache[i].lastRsi = GetRSI(currentSymbol, RsiPeriod, PRICE_CLOSE);
          rsiCache[i].lastBarTime = barTime;
       }
+      if(adxCache[i].lastBarTime != barTime) {
+         adxCache[i].lastAdx = GetADX(currentSymbol, AdxPeriod);
+         adxCache[i].lastBarTime = barTime;
+      }
       
       // Check buy conditions
       if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH) {
          bool rsiCondition = (RsiStrategy == RSI_REVERSAL) ? (rsiCache[i].lastRsi < RsiBuyLevel) : (rsiCache[i].lastRsi > RsiSellLevel);
-         if(rsiCondition) {
+         bool adxCondition = !UseAdxFilter || (adxCache[i].lastAdx > AdxThreshold);
+         
+         if(rsiCondition && adxCondition) {
             canOpenBuy = true;
          }
          if(Debug) {
-            Print(StringFormat("[%s] Buy check - Symbol: %s RSI: %f RSI Condition: %s",
+            Print(StringFormat("[%s] Buy check - Symbol: %s RSI: %f ADX: %f RSI Condition: %s ADX Condition: %s",
                TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
-               currentSymbol, rsiCache[i].lastRsi, rsiCondition ? "true" : "false"));
+               currentSymbol, rsiCache[i].lastRsi, adxCache[i].lastAdx,
+               rsiCondition ? "true" : "false",
+               adxCondition ? "true" : "false"));
          }
       }
       
       // Check sell conditions
       if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH) {
          bool rsiCondition = (RsiStrategy == RSI_REVERSAL) ? (rsiCache[i].lastRsi > RsiSellLevel) : (rsiCache[i].lastRsi < RsiBuyLevel);
-         if(rsiCondition) {
+         bool adxCondition = !UseAdxFilter || (adxCache[i].lastAdx > AdxThreshold);
+         
+         if(rsiCondition && adxCondition) {
             canOpenSell = true;
          }
          if(Debug) {
-            Print(StringFormat("[%s] Sell check - Symbol: %s RSI: %f RSI Condition: %s",
+            Print(StringFormat("[%s] Sell check - Symbol: %s RSI: %f ADX: %f RSI Condition: %s ADX Condition: %s",
                TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
-               currentSymbol, rsiCache[i].lastRsi, rsiCondition ? "true" : "false"));
+               currentSymbol, rsiCache[i].lastRsi, adxCache[i].lastAdx,
+               rsiCondition ? "true" : "false",
+               adxCondition ? "true" : "false"));
          }
       }
       
@@ -591,6 +701,34 @@ bool CanOpenNewTrade(string symbol, int pairIndex) {
    // Reset daily counters if needed
    ResetDailyCounters();
    
+   // Check current drawdown
+   double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double currentDrawdown = (currentBalance - currentEquity) / currentBalance * 100;
+   
+   // Check emergency drawdown
+   if(currentDrawdown >= EmergencyDrawdownPercent) {
+      if(CloseAllOnEmergency) {
+         CloseAllPositions();
+         if(Debug) {
+            Print(StringFormat("[%s] Emergency drawdown reached (%.2f%%) - Closing all positions",
+               TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+               currentDrawdown));
+         }
+      }
+      return false;
+   }
+   
+   // Check max drawdown for new trades (only if enabled)
+   if(EnableMaxDrawdown && currentDrawdown >= MaxDrawdownPercent) {
+      if(Debug) {
+         Print(StringFormat("[%s] Max drawdown reached (%.2f%%) - No new trades allowed",
+            TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+            currentDrawdown));
+      }
+      return false;
+   }
+   
    // Check pair limit
    if(MaxTradesPerPair > 0) {
       int currentPairTrades = CountPositions(symbol, POSITION_TYPE_BUY) + CountPositions(symbol, POSITION_TYPE_SELL);
@@ -615,6 +753,24 @@ bool CanOpenNewTrade(string symbol, int pairIndex) {
             Print(StringFormat("[%s] Total trades limit reached - Total Trades: %d",
                TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
                totalTrades));
+         }
+         return false;
+      }
+   }
+   
+   // Check active pairs limit
+   if(MaxActivePairs > 0) {
+      int activePairs = 0;
+      for(int i = 0; i < ArraySize(pairsArray); i++) {
+         if(CountPositions(pairsArray[i], POSITION_TYPE_BUY) > 0 || CountPositions(pairsArray[i], POSITION_TYPE_SELL) > 0) {
+            activePairs++;
+         }
+      }
+      if(activePairs >= MaxActivePairs) {
+         if(Debug) {
+            Print(StringFormat("[%s] Active pairs limit reached - Active Pairs: %d",
+               TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+               activePairs));
          }
          return false;
       }
@@ -1189,12 +1345,13 @@ void UpdateInfoPanel() {
    // Calculer la largeur nécessaire pour chaque colonne
    int pairWidth = 10;  // Largeur pour la colonne "Pair"
    int rsiWidth = 6;    // Largeur pour la colonne "RSI"
+   int adxWidth = 6;    // Largeur pour la colonne "ADX"
    int plWidth = 11;    // Largeur pour la colonne "P/L"
    int maxddWidth = 11; // Largeur pour la colonne "MaxDD"
    int closedWidth = 11; // Largeur pour la colonne "Closed"
    
    // Calculer la largeur totale nécessaire
-   int totalWidth = pairWidth + rsiWidth + plWidth + maxddWidth + closedWidth + 8; // +8 pour les séparateurs
+   int totalWidth = pairWidth + rsiWidth + adxWidth + plWidth + maxddWidth + closedWidth + 10; // +10 pour les séparateurs
    
    // Ajuster la largeur du panneau si nécessaire
    if(totalWidth * FontSize > PanelWidth) {
@@ -1202,23 +1359,26 @@ void UpdateInfoPanel() {
       double scaleFactor = (double)PanelWidth / (totalWidth * FontSize);
       pairWidth = (int)(pairWidth * scaleFactor);
       rsiWidth = (int)(rsiWidth * scaleFactor);
+      adxWidth = (int)(adxWidth * scaleFactor);
       plWidth = (int)(plWidth * scaleFactor);
       maxddWidth = (int)(maxddWidth * scaleFactor);
       closedWidth = (int)(closedWidth * scaleFactor);
    }
    
    // Table header
-   string header = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+   string header = StringFormat("%-*s | %*s | %*s | %*s | %*s | %*s",
       pairWidth, "Pair",
       rsiWidth, "RSI",
+      adxWidth, "ADX",
       plWidth, "P/L",
       maxddWidth, StringFormat("MaxDD(%s)", accountCurrency),
       closedWidth, "Closed");
    
    // Separator line
-   string tableSeparator = StringFormat("%-*s+%*s+%*s+%*s+%*s",
+   string tableSeparator = StringFormat("%-*s+%*s+%*s+%*s+%*s+%*s",
       pairWidth, "----------",
       rsiWidth, "--------",
+      adxWidth, "--------",
       plWidth, "--------------",
       maxddWidth, "--------------",
       closedWidth, "--------------");
@@ -1280,9 +1440,10 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Table header
-   string headerUsdQuote = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+   string headerUsdQuote = StringFormat("%-*s | %*s | %*s | %*s | %*s | %*s",
       pairWidth, "Pair",
       rsiWidth, "RSI",
+      adxWidth, "ADX",
       plWidth, "P/L",
       maxddWidth, StringFormat("MaxDD(%s)", accountCurrency),
       closedWidth, "Closed");
@@ -1290,9 +1451,10 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Separator line
-   string tableSeparatorUsdQuote = StringFormat("%-*s+%*s+%*s+%*s+%*s",
+   string tableSeparatorUsdQuote = StringFormat("%-*s+%*s+%*s+%*s+%*s+%*s",
       pairWidth, "----------",
       rsiWidth, "--------",
+      adxWidth, "--------",
       plWidth, "--------------",
       maxddWidth, "--------------",
       closedWidth, "--------------");
@@ -1331,9 +1493,10 @@ void UpdateInfoPanel() {
          double currentRsi = GetRSI(symbol, RsiPeriod, PRICE_CLOSE);
          
          // Create line for this pair
-         string line = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+         string line = StringFormat("%-*s | %*s | %*s | %*s | %*s | %*s",
             pairWidth, symbol,
             rsiWidth, DoubleToString(NormalizeDouble(currentRsi, 2), 2),
+            adxWidth, DoubleToString(NormalizeDouble(adxCache[i].lastAdx, 2), 2),
             plWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit, 2), 2),
             maxddWidth, DoubleToString(NormalizeDouble(-MathMax(buyInfoArray[i].maxDD, sellInfoArray[i].maxDD), 2), 2),
             closedWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit, 2), 2));
@@ -1359,9 +1522,10 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Table header
-   string headerUsdBase = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+   string headerUsdBase = StringFormat("%-*s | %*s | %*s | %*s | %*s | %*s",
       pairWidth, "Pair",
       rsiWidth, "RSI",
+      adxWidth, "ADX",
       plWidth, "P/L",
       maxddWidth, StringFormat("MaxDD(%s)", accountCurrency),
       closedWidth, "Closed");
@@ -1369,9 +1533,10 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Separator line
-   string tableSeparatorUsdBase = StringFormat("%-*s+%*s+%*s+%*s+%*s",
+   string tableSeparatorUsdBase = StringFormat("%-*s+%*s+%*s+%*s+%*s+%*s",
       pairWidth, "----------",
       rsiWidth, "--------",
+      adxWidth, "--------",
       plWidth, "--------------",
       maxddWidth, "--------------",
       closedWidth, "--------------");
@@ -1410,9 +1575,10 @@ void UpdateInfoPanel() {
          double currentRsi = GetRSI(symbol, RsiPeriod, PRICE_CLOSE);
          
          // Create line for this pair
-         string line = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+         string line = StringFormat("%-*s | %*s | %*s | %*s | %*s | %*s",
             pairWidth, symbol,
             rsiWidth, DoubleToString(NormalizeDouble(currentRsi, 2), 2),
+            adxWidth, DoubleToString(NormalizeDouble(adxCache[i].lastAdx, 2), 2),
             plWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit, 2), 2),
             maxddWidth, DoubleToString(NormalizeDouble(-MathMax(buyInfoArray[i].maxDD, sellInfoArray[i].maxDD), 2), 2),
             closedWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit, 2), 2));
@@ -1434,9 +1600,10 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Table header
-   string headerOther = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+   string headerOther = StringFormat("%-*s | %*s | %*s | %*s | %*s | %*s",
       pairWidth, "Pair",
       rsiWidth, "RSI",
+      adxWidth, "ADX",
       plWidth, "P/L",
       maxddWidth, StringFormat("MaxDD(%s)", accountCurrency),
       closedWidth, "Closed");
@@ -1444,9 +1611,10 @@ void UpdateInfoPanel() {
    y += yStep;
    
    // Separator line
-   string tableSeparatorOther = StringFormat("%-*s+%*s+%*s+%*s+%*s",
+   string tableSeparatorOther = StringFormat("%-*s+%*s+%*s+%*s+%*s+%*s",
       pairWidth, "----------",
       rsiWidth, "--------",
+      adxWidth, "--------",
       plWidth, "--------------",
       maxddWidth, "--------------",
       closedWidth, "--------------");
@@ -1485,9 +1653,10 @@ void UpdateInfoPanel() {
          double currentRsi = GetRSI(symbol, RsiPeriod, PRICE_CLOSE);
          
          // Create line for this pair
-         string line = StringFormat("%-*s | %*s | %*s | %*s | %*s",
+         string line = StringFormat("%-*s | %*s | %*s | %*s | %*s | %*s",
             pairWidth, symbol,
             rsiWidth, DoubleToString(NormalizeDouble(currentRsi, 2), 2),
+            adxWidth, DoubleToString(NormalizeDouble(adxCache[i].lastAdx, 2), 2),
             plWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].totalProfit + sellInfoArray[i].totalProfit, 2), 2),
             maxddWidth, DoubleToString(NormalizeDouble(-MathMax(buyInfoArray[i].maxDD, sellInfoArray[i].maxDD), 2), 2),
             closedWidth, DoubleToString(NormalizeDouble(buyInfoArray[i].closedProfit + sellInfoArray[i].closedProfit, 2), 2));
@@ -1529,4 +1698,17 @@ void LogInfo(string sym, string act, double rsi, string dir, double lots, int nb
    string msg = StringFormat("%s|%s|RSI:%.1f|%s|L:%.2f|N:%d|P:%.2f|S:%.1f|%s|%s",
       sym, act, rsi, dir, lots, nbPos, profit, sprd, status, extra);
    Print(msg);
+}
+
+//+------------------------------------------------------------------+
+//| Close all positions                                               |
+//+------------------------------------------------------------------+
+void CloseAllPositions() {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic) {
+            trade.PositionClose(PositionGetTicket(i));
+         }
+      }
+   }
 } 
