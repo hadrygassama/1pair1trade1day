@@ -13,6 +13,12 @@
 #include <Indicators\Indicators.mqh>
 #include <Arrays\ArrayString.mqh>
 #include <Arrays\ArrayObj.mqh>
+#include <stdlib.mqh>
+#include <stderror.mqh>
+
+// Ensure all necessary includes for string and datetime handling
+#include <string.mqh>
+#include <datetime.mqh>
 
 // Enumérations
 enum ENUM_TRADE_DIRECTION {
@@ -57,6 +63,8 @@ struct SymbolData {
    int volumeHandle;     // Volume
    int volOscHandle;     // Volume Oscillator
    int atrHandle;        // ATR pour le buffer du stop loss
+   int ema100Handle;      // EMA 100 H1
+   int ema200Handle;      // EMA 200 H1
    
    // Valeurs des indicateurs
    double lastFastEMA;
@@ -67,6 +75,8 @@ struct SymbolData {
    double lastVolume;
    double lastVolOsc;
    double lastATR;
+   double lastEMA100;
+   double lastEMA200;
    
    // États des signaux
    bool emaCrossedUp;
@@ -403,6 +413,8 @@ int OnInit() {
       symbols[i].volumeHandle = iVolumes(symbols[i].symbol, PERIOD_H1, VOLUME_TICK);
       symbols[i].volOscHandle = iCustom(symbols[i].symbol, PERIOD_H1, "Volume Oscillator", VolOscFastPeriod, VolOscSlowPeriod);
       symbols[i].atrHandle = iATR(symbols[i].symbol, PERIOD_H1, ATRPeriod);
+      symbols[i].ema100Handle = iMA(symbols[i].symbol, PERIOD_H1, 100, 0, MODE_EMA, PRICE_CLOSE);
+      symbols[i].ema200Handle = iMA(symbols[i].symbol, PERIOD_H1, 200, 0, MODE_EMA, PRICE_CLOSE);
       
       if(symbols[i].emaFastHandle == INVALID_HANDLE || 
          symbols[i].emaSlowHandle == INVALID_HANDLE ||
@@ -411,7 +423,9 @@ int OnInit() {
          symbols[i].adxHandle == INVALID_HANDLE ||
          symbols[i].volumeHandle == INVALID_HANDLE ||
          symbols[i].volOscHandle == INVALID_HANDLE ||
-         symbols[i].atrHandle == INVALID_HANDLE) {
+         symbols[i].atrHandle == INVALID_HANDLE ||
+         symbols[i].ema100Handle == INVALID_HANDLE ||
+         symbols[i].ema200Handle == INVALID_HANDLE) {
          PrintFormat("Error creating indicators for %s", symbols[i].symbol);
          return INIT_FAILED;
       }
@@ -440,6 +454,8 @@ void OnDeinit(const int reason) {
       if(symbols[i].volumeHandle != INVALID_HANDLE) IndicatorRelease(symbols[i].volumeHandle);
       if(symbols[i].volOscHandle != INVALID_HANDLE) IndicatorRelease(symbols[i].volOscHandle);
       if(symbols[i].atrHandle != INVALID_HANDLE) IndicatorRelease(symbols[i].atrHandle);
+      if(symbols[i].ema100Handle != INVALID_HANDLE) IndicatorRelease(symbols[i].ema100Handle);
+      if(symbols[i].ema200Handle != INVALID_HANDLE) IndicatorRelease(symbols[i].ema200Handle);
    }
    
    PrintFormat("EA deinitialized - Reason: %d", reason);
@@ -791,9 +807,42 @@ void ProcessSymbol(SymbolData &symbol) {
    double swingHigh = FindSwingHigh(symbol.symbol, SwingPeriods, currentATR);
    double swingLow = FindSwingLow(symbol.symbol, SwingPeriods, currentATR);
    
-   // Buy conditions
+   // Calculate EMA 100 value
+   double ema100Buffer[];
+   ArraySetAsSeries(ema100Buffer, true);
+   if(CopyBuffer(symbol.ema100Handle, 0, 0, 1, ema100Buffer) <= 0) {
+      return;
+   }
+   
+   double lastEMA100 = ema100Buffer[0];
+   
+   // Calculate EMA 200 value
+   double ema200Buffer[];
+   ArraySetAsSeries(ema200Buffer, true);
+   if(CopyBuffer(symbol.ema200Handle, 0, 0, 1, ema200Buffer) <= 0) {
+      return;
+   }
+   
+   double lastEMA200 = ema200Buffer[0];
+   
+   // Determine bullish or bearish conditions using both EMAs
+   bool isBullish = (currentBid > lastEMA100 && currentBid > lastEMA200);
+   bool isBearish = (currentBid < lastEMA100 && currentBid < lastEMA200);
+   
+   // Log the market condition
+   if(ShowTradeLogs) {
+      if(isBullish) {
+         PrintFormat("[%s] Market is Bullish", symbol.symbol);
+      } else if(isBearish) {
+         PrintFormat("[%s] Market is Bearish", symbol.symbol);
+      } else {
+         PrintFormat("[%s] Market is Neutral", symbol.symbol);
+      }
+   }
+   
+   // Modify buy conditions to include EMA 100
    if(TradeDirection != TRADE_SELL && emaCrossedUp && adxCondition && volumeCondition && 
-      symbol.signalConfirmed && h4TrendAligned && volOscConfirmed && retracementConfirmed) {
+      symbol.signalConfirmed && h4TrendAligned && volOscConfirmed && retracementConfirmed && isBullish) {
       if(symbol.dailyTradesCount < MaxDailyTrades) {
          // Calculate stop loss and take profit with ATR buffer
          double sl = swingLow;
@@ -826,9 +875,9 @@ void ProcessSymbol(SymbolData &symbol) {
       }
    }
    
-   // Sell conditions
+   // Modify sell conditions to include EMA 100
    if(TradeDirection != TRADE_BUY && emaCrossedDown && adxCondition && volumeCondition && 
-      symbol.signalConfirmed && h4TrendAligned && volOscConfirmed && retracementConfirmed) {
+      symbol.signalConfirmed && h4TrendAligned && volOscConfirmed && retracementConfirmed && isBearish) {
       if(symbol.dailyTradesCount < MaxDailyTrades) {
          // Calculate stop loss and take profit with ATR buffer
          double sl = swingHigh;
