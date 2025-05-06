@@ -27,7 +27,7 @@ enum ENUM_RSI_STRATEGY {
 
 // Expert parameters
 input group    "=== Trading Settings ==="
-input string Pairs = "AUDCAD,AUDCHF,AUDJPY,AUDNZD,AUDUSD,CADCHF,CADJPY,CHFJPY,EURAUD,EURCAD,EURCHF,EURGBP,EURJPY,EURNZD,EURUSD,GBPAUD,GBPCAD,GBPCHF,GBPJPY,GBPNZD,GBPUSD,NZDCAD,NZDCHF,NZDJPY,NZDUSD,USDCAD,USDCHF,USDJPY";  // Pairs to trade
+input string Pairs = "XAUUSD";  // Pairs to trade
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Direction
 input double   Lots = 0.1;            // Lots
 input int      Magic = 548762;         // Magic
@@ -63,28 +63,28 @@ input group    "=== ADX Filter ==="
 input bool     UseAdxFilter = true;    // Enable ADX Filter
 input ENUM_TIMEFRAMES AdxTimeframe = PERIOD_CURRENT;  // ADX timeframe
 input int      AdxPeriod = 14;         // ADX Period
-input double   AdxMinThreshold = 20;      // Minimum ADX Threshold
-input double   AdxMaxThreshold = 50;      // Maximum ADX Threshold
+input double   AdxMinThreshold = 25;      // Minimum ADX Threshold
+input double   AdxMaxThreshold = 100;      // Maximum ADX Threshold
 
 input group    "=== Moving Average Filter ==="
 input bool     UseMaFilter = true;     // Enable MA Filter
 input ENUM_TIMEFRAMES MaTimeframe = PERIOD_CURRENT;  // MA timeframe
-input int      MaPeriod = 200;          // MA Period
+input int      MaPeriod = 20;          // MA Period
 input ENUM_MA_METHOD MaMethod = MODE_EMA;  // MA Method (SMA/EMA)
 input bool     BuyAboveMa = false;      // Buy when price above MA
 input bool     SellBelowMa = false;     // Sell when price below MA
 input int      EmaRangePoints = 100;  // Range around EMA (points, 0 = disabled)
 
 input group    "=== Exit Conditions ==="
-input int      TakeProfitPoints = 30;  // Take Profit (points)
-input int      TrailingStopPoints = 20;  // Trailing Stop (points)
-input int      TrailingStartPoints = 10;  // Trailing Start (points)
+input int      TakeProfitPoints = 600;  // Take Profit (points)
+input int      TrailingStopPoints = 500;  // Trailing Stop (points)
+input int      TrailingStartPoints = 400;  // Trailing Start (points)
 input int      StopLossPoints = 0;  // Stop loss (points, 0 = disabled)
 
 input group    "=== DCA Settings ==="
 input bool     EnableDCA = true;  // Enable DCA settings
 input int      MaxDCAPositions = 0;    // Max DCA positions (0 = unlimited)
-input bool     EnableLotMultiplier = true;  // Enable lot multiplier for DCA
+input bool     EnableLotMultiplier = false;  // Enable lot multiplier for DCA
 input double   LotMultiplier = 1.5;      // DCA lot multiplier
 input double   MaxLotEntry = 1;        // Maximum lot size for DCA entries
 
