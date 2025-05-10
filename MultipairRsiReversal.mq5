@@ -25,14 +25,29 @@ enum ENUM_RSI_STRATEGY {
    RSI_CONTINUATION     // CONTINUATION - Buy (RSI>70), sell (RSI<30)
 };
 
+// Add BB Mode enum
+enum ENUM_BB_MODE {
+   BB_UPPER_LOWER,  // Trade on Upper/Lower Bands
+   BB_MIDDLE        // Trade on Middle Band
+};
+
+// Lot Size Settings enum
+enum ENUM_LOT_CALCULATION_METHOD {
+   LOT_FIXED,  // Fixed lot size
+   LOT_RISK_PERCENTAGE  // Risk percentage for lot calculation
+};
+
 // Expert parameters
 input group    "=== Trading Settings ==="
-input string Pairs = "XAUUSD";  // Pairs to trade
+input string Pairs = "EURUSD,GBPUSD,USDJPY,USDCHF,AUDUSD,USDCAD,NZDUSD,EURGBP,EURJPY,GBPJPY,EURCHF,EURAUD,GBPCHF,AUDJPY,CADJPY";  // Trading Pairs (comma separated)
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Direction
-input double   Lots = 0.1;            // Lots
+input ENUM_LOT_CALCULATION_METHOD LotCalculationMethod = LOT_FIXED;  // Lot calculation method
+input double RiskPercent = 1.0;          // Risk percentage for lot calculation
+input double   Lots = 0.01;            // Fixed lot size
 input int      Magic = 548762;         // Magic
 input int      MaxSpread = 40;         // Max spread (pips)
 input int      Slippage = 3;           // Slippage in points
+input int      OpenTime = 3600;        // Temps entre les ordres (secondes)
 
 input group    "=== Trading Hours ==="
 input int      TimeStartHour = 0;      // Start hour
@@ -52,7 +67,7 @@ input int      MaxSellTradesPerPair = 0;        // Max sell trades per pair (0 =
 input int      MaxTradesOnAccount = 0;          // Max trades on the account (0 = unlimited)
 
 input group    "=== RSI Strategy ==="
-input bool     UseRsiFilter = false;         // Enable RSI Filter
+input bool     UseRsiFilter = true;         // Enable RSI Filter
 input ENUM_RSI_STRATEGY RsiStrategy = RSI_REVERSAL;  // RSI strategy type
 input ENUM_TIMEFRAMES RsiTimeframe = PERIOD_CURRENT;  // RSI timeframe
 input int      RsiPeriod = 14;         // Period
@@ -60,41 +75,61 @@ input int      RsiBuyLevel = 30;       // RSI Buy level
 input int      RsiSellLevel = 70;      // RSI Sell level
 
 input group    "=== ADX Filter ==="
-input bool     UseAdxFilter = true;    // Enable ADX Filter
+input bool     UseAdxFilter = false;    // Enable ADX Filter
 input ENUM_TIMEFRAMES AdxTimeframe = PERIOD_CURRENT;  // ADX timeframe
 input int      AdxPeriod = 14;         // ADX Period
-input double   AdxMinThreshold = 25;      // Minimum ADX Threshold
+input double   AdxMinThreshold = 50;      // Minimum ADX Threshold
 input double   AdxMaxThreshold = 100;      // Maximum ADX Threshold
 
 input group    "=== Moving Average Filter ==="
-input bool     UseMaFilter = true;     // Enable MA Filter
+input bool     UseMaFilter = false;     // Enable MA Filter
 input ENUM_TIMEFRAMES MaTimeframe = PERIOD_CURRENT;  // MA timeframe
 input int      MaPeriod = 20;          // MA Period
 input ENUM_MA_METHOD MaMethod = MODE_EMA;  // MA Method (SMA/EMA)
 input bool     BuyAboveMa = false;      // Buy when price above MA
 input bool     SellBelowMa = false;     // Sell when price below MA
-input int      EmaRangePoints = 100;  // Range around EMA (points, 0 = disabled)
+input int      EmaRangePoints = 0;  // Range around EMA (points, 0 = disabled)
+
+input group    "=== Bollinger Bands Filter ==="
+input bool     UseBBFilter = true;     // Enable Bollinger Bands Filter
+input ENUM_TIMEFRAMES BBTimeframe = PERIOD_CURRENT;  // BB timeframe
+input int      BBPeriod = 20;          // BB Period
+input double   BBDeviation = 2.0;      // BB Deviation
+input ENUM_BB_MODE BBMode = BB_UPPER_LOWER; // BB Trading Mode
+input bool     BuyAboveBB = false;      // Buy when price above BB
+input bool     SellBelowBB = false;     // Sell when price below BB
+
+// Add BB cache structure
+struct BBCache {
+   datetime lastBarTime;
+   double upperBand;
+   double middleBand;
+   double lowerBand;
+   bool initialized;
+};
+
+// Add BB cache array
+BBCache bbCache[100];   // 100 paires max
 
 input group    "=== Exit Conditions ==="
-input int      TakeProfitPoints = 600;  // Take Profit (points)
-input int      TrailingStopPoints = 500;  // Trailing Stop (points)
-input int      TrailingStartPoints = 400;  // Trailing Start (points)
+input int      TakeProfitPoints = 30;  // Take Profit (points)
+input int      TrailingStopPoints = 20;  // Trailing Stop (points)
+input int      TrailingStartPoints = 10;  // Trailing Start (points)
 input int      StopLossPoints = 0;  // Stop loss (points, 0 = disabled)
 
 input group    "=== DCA Settings ==="
 input bool     EnableDCA = true;  // Enable DCA settings
 input int      MaxDCAPositions = 0;    // Max DCA positions (0 = unlimited)
 input bool     EnableLotMultiplier = false;  // Enable lot multiplier for DCA
-input double   LotMultiplier = 1.5;      // DCA lot multiplier
-input double   MaxLotEntry = 1;        // Maximum lot size for DCA entries
+input double   LotMultiplier = 1.5;      // Lot multiplier for DCA
+input double   MaxLotEntry = 1.0;        // Maximum lot size for entries
 
 input group    "=== Risk Management ==="
-input bool     EnableMaxDrawdown = false;    // Enable max drawdown protection
-input double   MaxDrawdownPercent = 30.0;    // Max drawdown before stopping new trades (%)
+input bool     EnableMaxDrawdown = true;    // Enable max drawdown protection
+input double   MaxDrawdownPercent = 30.0;    // Max drawdown before stopping new trades (%, 0 = disabled)
 input bool     CloseAllOnEmergency = false;  // Close all trades on emergency drawdown
-input double   EmergencyDrawdownPercent = 1.0;  // Emergency drawdown to close all trades (%)
-input bool     EnableMaxDailyProfit = false;  // Enable max daily profit protection
-input double   MaxDailyProfitPercent = 0.5;  // Max daily profit before stopping new trades (%)
+input double   EmergencyDrawdownPercent = 0;  // Emergency drawdown to close all trades (%, 0 = disabled)
+input double   MaxDailyProfitPercent = 0;  // Max daily profit before stopping new trades (0 = disabled)
 
 input group    "=== Interface Settings ==="
 input bool     Info = true;            // Show panel
@@ -117,6 +152,7 @@ double initialBalance = 0;
 double maxBuyDD = 0;
 double maxSellDD = 0;
 double maxTotalDD = 0;
+double totalProfit = 0;  // Added totalProfit declaration
 string pairsArray[];  // Array to store currency pairs
 string accountCurrency = "";      // Currency of the trading account
 MqlDateTime timeStruct;
@@ -132,7 +168,7 @@ int totalBuyPositions;
 int totalSellPositions;
 double buyTotalProfit = 0;
 double sellTotalProfit = 0;
-double totalProfit = 0;
+double globalTotalProfit = 0;  // Renamed from totalProfit to avoid hiding
 double buyAvgPrice = 0;
 double sellAvgPrice = 0;
 double buyLots = 0;
@@ -530,6 +566,22 @@ int OnInit() {
       return INIT_PARAMETERS_INCORRECT;
    }
    
+   // Validate drawdown parameters
+   if(EnableMaxDrawdown) {
+      if(MaxDrawdownPercent <= 0) {
+         Print("Error: MaxDrawdownPercent must be greater than 0 when EnableMaxDrawdown is true");
+         return INIT_PARAMETERS_INCORRECT;
+      }
+      if(CloseAllOnEmergency && EmergencyDrawdownPercent <= 0) {
+         Print("Error: EmergencyDrawdownPercent must be greater than 0 when CloseAllOnEmergency is true");
+         return INIT_PARAMETERS_INCORRECT;
+      }
+      if(CloseAllOnEmergency && EmergencyDrawdownPercent >= MaxDrawdownPercent) {
+         Print("Error: EmergencyDrawdownPercent must be less than MaxDrawdownPercent");
+         return INIT_PARAMETERS_INCORRECT;
+      }
+   }
+   
    // Initialize trade object
    trade.SetExpertMagicNumber(Magic);
    initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
@@ -664,7 +716,7 @@ void OnTick() {
       canOpenBuy = false;
       canOpenSell = false;
       
-      // RSI et ADX cache par symbole - calculé une seule fois par bougie
+      // RSI, ADX, MA and BB cache par symbole - calculé une seule fois par bougie
       datetime barTime = iTime(currentSymbol, PERIOD_CURRENT, 0);
       if(rsiCache[i].lastBarTime != barTime) {
          rsiCache[i].lastRsi = GetRSI(currentSymbol, RsiPeriod, PRICE_CLOSE);
@@ -678,13 +730,18 @@ void OnTick() {
          maCache[i].lastMa = GetMA(currentSymbol, MaPeriod, MaMethod);
          maCache[i].lastBarTime = barTime;
       }
+      if(UseBBFilter && (bbCache[i].lastBarTime != barTime || !bbCache[i].initialized)) {
+         GetBB(currentSymbol, BBPeriod, BBDeviation, BBMode);
+         bbCache[i].lastBarTime = barTime;
+      }
       
       if(Debug) {
-         Print(StringFormat("[%s] Indicators - RSI: %f ADX: %f MA: %f Bid: %f Ask: %f Spread: %f",
+         Print(StringFormat("[%s] Indicators - RSI: %s ADX: %s MA: %s BB: %s Bid: %f Ask: %f Spread: %f",
             currentSymbol,
-            rsiCache[i].lastRsi,
-            adxCache[i].lastAdx,
-            maCache[i].lastMa,
+            UseRsiFilter ? DoubleToString(rsiCache[i].lastRsi, 2) : "N/A",
+            UseAdxFilter ? DoubleToString(adxCache[i].lastAdx, 2) : "N/A",
+            UseMaFilter ? DoubleToString(maCache[i].lastMa, 2) : "N/A",
+            UseBBFilter ? DoubleToString(bbCache[i].middleBand, 2) : "N/A",
             bid,
             ask,
             spreadInPips));
@@ -696,31 +753,35 @@ void OnTick() {
          bool adxCondition = !UseAdxFilter || (adxCache[i].lastAdx > AdxMinThreshold && adxCache[i].lastAdx < AdxMaxThreshold);
          bool maCondition = !UseMaFilter || (BuyAboveMa ? (bid > maCache[i].lastMa) : (bid < maCache[i].lastMa));
          bool emaRangeCondition = (EmaRangePoints == 0) || (bid < maCache[i].lastMa - EmaRangePoints * point || bid > maCache[i].lastMa + EmaRangePoints * point);
-         if(rsiCondition && adxCondition && maCondition && emaRangeCondition) {
+         bool bbCondition = !UseBBFilter || (
+            BBMode == BB_UPPER_LOWER ? 
+               (BuyAboveBB ? (bid > bbCache[i].upperBand) : (bid < bbCache[i].lowerBand)) :
+               (BuyAboveBB ? (bid > bbCache[i].middleBand) : (bid < bbCache[i].middleBand))
+         );
+         
+         if(rsiCondition && adxCondition && maCondition && emaRangeCondition && bbCondition) {
             canOpenBuy = true;
          }
+         
          if(Debug) {
-            Print(StringFormat("[%s] Buy check - RSI Condition: %s (%f %s %d) ADX Condition: %s (%f %s %f) MA Condition: %s (%f %s %f) EMA Range Condition: %s (%f %s %f)",
+            Print(StringFormat("[%s] Buy check - RSI Condition: %s (%s %s %d) ADX Condition: %s (%s %s %f) MA Condition: %s (%f %s %s) BB Condition: %s (%f %s %s)",
                currentSymbol,
                rsiCondition ? "true" : "false",
-               rsiCache[i].lastRsi,
+               UseRsiFilter ? DoubleToString(rsiCache[i].lastRsi, 2) : "N/A",
                (RsiStrategy == RSI_REVERSAL) ? "<" : ">",
                (RsiStrategy == RSI_REVERSAL) ? RsiBuyLevel : RsiBuyLevel,
                adxCondition ? "true" : "false",
-               adxCache[i].lastAdx,
+               UseAdxFilter ? DoubleToString(adxCache[i].lastAdx, 2) : "N/A",
                ">",
                AdxMinThreshold,
-               AdxMaxThreshold,
                maCondition ? "true" : "false",
                bid,
                BuyAboveMa ? ">" : "<",
-               maCache[i].lastMa,
-               emaRangeCondition ? "true" : "false",
+               UseMaFilter ? DoubleToString(maCache[i].lastMa, 2) : "N/A",
+               bbCondition ? "true" : "false",
                bid,
-               BuyAboveMa ? ">" : "<",
-               maCache[i].lastMa - EmaRangePoints * point,
-               BuyAboveMa ? ">" : "<",
-               maCache[i].lastMa + EmaRangePoints * point));
+               BuyAboveBB ? ">" : "<",
+               UseBBFilter ? DoubleToString(bbCache[i].middleBand, 2) : "N/A"));
          }
       }
       
@@ -730,51 +791,70 @@ void OnTick() {
          bool adxCondition = !UseAdxFilter || (adxCache[i].lastAdx > AdxMinThreshold && adxCache[i].lastAdx < AdxMaxThreshold);
          bool maCondition = !UseMaFilter || (SellBelowMa ? (ask < maCache[i].lastMa) : (ask > maCache[i].lastMa));
          bool emaRangeCondition = (EmaRangePoints == 0) || (ask < maCache[i].lastMa - EmaRangePoints * point || ask > maCache[i].lastMa + EmaRangePoints * point);
-         if(rsiCondition && adxCondition && maCondition && emaRangeCondition) {
+         bool bbCondition = !UseBBFilter || (
+            BBMode == BB_UPPER_LOWER ? 
+               (SellBelowBB ? (ask < bbCache[i].lowerBand) : (ask > bbCache[i].upperBand)) :
+               (SellBelowBB ? (ask < bbCache[i].middleBand) : (ask > bbCache[i].middleBand))
+         );
+         
+         if(rsiCondition && adxCondition && maCondition && emaRangeCondition && bbCondition) {
             canOpenSell = true;
          }
+         
          if(Debug) {
-            Print(StringFormat("[%s] Sell check - RSI Condition: %s (%f %s %d) ADX Condition: %s (%f %s %f) MA Condition: %s (%f %s %f) EMA Range Condition: %s (%f %s %f)",
+            Print(StringFormat("[%s] Sell check - RSI Condition: %s (%s %s %d) ADX Condition: %s (%s %s %f) MA Condition: %s (%f %s %s) BB Condition: %s (%f %s %s)",
                currentSymbol,
                rsiCondition ? "true" : "false",
-               rsiCache[i].lastRsi,
+               UseRsiFilter ? DoubleToString(rsiCache[i].lastRsi, 2) : "N/A",
                (RsiStrategy == RSI_REVERSAL) ? ">" : "<",
                (RsiStrategy == RSI_REVERSAL) ? RsiSellLevel : RsiSellLevel,
                adxCondition ? "true" : "false",
-               adxCache[i].lastAdx,
+               UseAdxFilter ? DoubleToString(adxCache[i].lastAdx, 2) : "N/A",
                ">",
                AdxMinThreshold,
-               AdxMaxThreshold,
                maCondition ? "true" : "false",
                ask,
                SellBelowMa ? "<" : ">",
-               maCache[i].lastMa,
-               emaRangeCondition ? "true" : "false",
+               UseMaFilter ? DoubleToString(maCache[i].lastMa, 2) : "N/A",
+               bbCondition ? "true" : "false",
                ask,
-               SellBelowMa ? "<" : ">",
-               maCache[i].lastMa - EmaRangePoints * point,
-               SellBelowMa ? "<" : ">",
-               maCache[i].lastMa + EmaRangePoints * point));
+               SellBelowBB ? "<" : ">",
+               UseBBFilter ? DoubleToString(bbCache[i].middleBand, 2) : "N/A"));
          }
       }
       
       if(canOpenBuy || canOpenSell) {
-         lastOpenTimeArray[i] = currentTime;
+         // Suppression de la mise à jour prématurée de lastOpenTimeArray
       }
-      if(canOpenBuy && (MaxDailyBuyTradesPerPair == 0 || dailyBuyTrades[i] < MaxDailyBuyTradesPerPair) &&
+      
+      // Vérification des conditions pour l'ouverture d'un ordre d'achat
+      if(canOpenBuy && 
+         (MaxDailyBuyTradesPerPair == 0 || dailyBuyTrades[i] < MaxDailyBuyTradesPerPair) &&
          (MaxBuyTradesPerPair == 0 || CountPositions(pairsArray[i], POSITION_TYPE_BUY) < MaxBuyTradesPerPair) &&
          (MaxTradesOnAccount == 0 || PositionsTotal() < MaxTradesOnAccount) &&
-         (MaxDailyTradesOnAccount == 0 || (dailyBuyTrades[i] + dailySellTrades[i]) < MaxDailyTradesOnAccount)) {
-         OpenBuyOrder(pairsArray[i], i);
-         dailyBuyTrades[i]++;
+         (MaxDailyTradesOnAccount == 0 || (dailyBuyTrades[i] + dailySellTrades[i]) < MaxDailyTradesOnAccount) &&
+         (currentTime - lastOpenTimeArray[i] >= OpenTime)) {
+         
+         bool orderOpened = OpenBuyOrder(pairsArray[i], i);
+         if(orderOpened) {
+            lastOpenTimeArray[i] = currentTime;
+            dailyBuyTrades[i]++;
+         }
       }
 
-      if(canOpenSell && (MaxDailySellTradesPerPair == 0 || dailySellTrades[i] < MaxDailySellTradesPerPair) &&
+      // Vérification des conditions pour l'ouverture d'un ordre de vente
+      if(canOpenSell && 
+         (MaxDailySellTradesPerPair == 0 || dailySellTrades[i] < MaxDailySellTradesPerPair) &&
          (MaxSellTradesPerPair == 0 || CountPositions(pairsArray[i], POSITION_TYPE_SELL) < MaxSellTradesPerPair) &&
          (MaxTradesOnAccount == 0 || PositionsTotal() < MaxTradesOnAccount) &&
-         (MaxDailyTradesOnAccount == 0 || (dailyBuyTrades[i] + dailySellTrades[i]) < MaxDailyTradesOnAccount)) {
-         OpenSellOrder(pairsArray[i], i);
-         dailySellTrades[i]++;
+         (MaxDailyTradesOnAccount == 0 || (dailyBuyTrades[i] + dailySellTrades[i]) < MaxDailyTradesOnAccount) &&
+         (currentTime - lastOpenTimeArray[i] >= OpenTime)) {
+         
+         bool orderOpened = OpenSellOrder(pairsArray[i], i);
+         if(orderOpened) {
+            lastOpenTimeArray[i] = currentTime;
+            dailySellTrades[i]++;
+         }
       }
       UpdateTrailingStops(currentSymbol, bid, ask);
       CheckDCAConditions(currentSymbol, i);
@@ -808,7 +888,7 @@ void ResetDailyCounters() {
 //+------------------------------------------------------------------+
 bool CanOpenNewTrade(string symbol, int pairIndex) {
    // Check if max daily profit protection is enabled and limit reached
-   if(EnableMaxDailyProfit && dailyProfitPercent >= MaxDailyProfitPercent) {
+   if(MaxDailyProfitPercent > 0 && dailyProfitPercent >= MaxDailyProfitPercent) {
       if(Debug) {
          Print("Max daily profit reached: ", dailyProfitPercent, "%");
       }
@@ -820,8 +900,8 @@ bool CanOpenNewTrade(string symbol, int pairIndex) {
    
    // Calculer le drawdown actuel
    double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double totalProfit = buyInfoArray[pairIndex].totalProfit + sellInfoArray[pairIndex].totalProfit;
-   double drawdownPercent = totalProfit < 0 ? MathAbs(totalProfit) / currentBalance * 100 : 0;
+   double pairTotalProfit = buyInfoArray[pairIndex].totalProfit + sellInfoArray[pairIndex].totalProfit;
+   double drawdownPercent = pairTotalProfit < 0 ? MathAbs(pairTotalProfit) / currentBalance * 100 : 0;
    
    // Vérifier si le drawdown dépasse le seuil d'urgence
    if(CloseAllOnEmergency && drawdownPercent >= EmergencyDrawdownPercent) {
@@ -847,12 +927,12 @@ void UpdateTradeCounters(int pairIndex) {
 //+------------------------------------------------------------------+
 //| Open Buy Order                                                     |
 //+------------------------------------------------------------------+
-void OpenBuyOrder(string symbol, int idx) {
-   if(TradeDirection == TRADE_SELL_ONLY) return;
+bool OpenBuyOrder(string symbol, int idx) {
+   if(TradeDirection == TRADE_SELL_ONLY) return false;
    
    // Check daily trade limits
    if(!CanOpenNewTrade(symbol, idx)) {
-      return;
+      return false;
    }
    
    int buyPositions = CountPositions(symbol, POSITION_TYPE_BUY);
@@ -864,16 +944,10 @@ void OpenBuyOrder(string symbol, int idx) {
          double localPoint = SymbolInfoDouble(symbol, SYMBOL_POINT);
          double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
          double volumeStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-         double currentLots = Lots;
-         if(EnableLotMultiplier && buyPositions > 0) {
-            currentLots = Lots * MathPow(LotMultiplier, buyPositions);
-            if(currentLots > MaxLotEntry) currentLots = MaxLotEntry;
-         }
-         currentLots = MathFloor(currentLots / volumeStep) * volumeStep;
-         double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-         double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-         currentLots = MathMax(minLot, MathMin(maxLot, currentLots));
-         double profit = buyInfo.totalProfit;
+         double currentLots = CalculateLotSize(symbol, POSITION_TYPE_BUY, buyPositions);
+         if(currentLots <= 0) return false;
+         
+         double positionProfit = buyInfo.totalProfit;
          double sprd = 0.0;
          if(!SymbolInfoDouble(symbol, (ENUM_SYMBOL_INFO_DOUBLE)SYMBOL_SPREAD, sprd)) sprd = 0.0;
          string status = "OK";
@@ -883,11 +957,12 @@ void OpenBuyOrder(string symbol, int idx) {
          if(trade.Buy(currentLots, symbol, ask, stopLoss, 0, expertName)) {
             // Update trade counters after successful trade
             UpdateTradeCounters(idx);
+            return true;
          } else {
             status = "FAIL";
             extra = IntegerToString(GetLastError());
          }
-         LogInfo(symbol, "BUY", localRsi, "B", currentLots, buyPositions, profit, sprd, status, extra);
+         LogInfo(symbol, "BUY", localRsi, "B", currentLots, buyPositions, positionProfit, sprd, status, extra);
       }
    } else {
       double sprd = 0.0;
@@ -895,17 +970,18 @@ void OpenBuyOrder(string symbol, int idx) {
       LogInfo(symbol, "BUY", localRsi, "B", Lots, buyPositions, buyInfo.totalProfit, sprd, "MAX", "dca");
    }
    buyInfoArray[idx] = buyInfo;
+   return false;
 }
 
 //+------------------------------------------------------------------+
 //| Open Sell Order                                                    |
 //+------------------------------------------------------------------+
-void OpenSellOrder(string symbol, int idx) {
-   if(TradeDirection == TRADE_BUY_ONLY) return;
+bool OpenSellOrder(string symbol, int idx) {
+   if(TradeDirection == TRADE_BUY_ONLY) return false;
    
    // Check daily trade limits
    if(!CanOpenNewTrade(symbol, idx)) {
-      return;
+      return false;
    }
    
    int sellPositions = CountPositions(symbol, POSITION_TYPE_SELL);
@@ -917,16 +993,10 @@ void OpenSellOrder(string symbol, int idx) {
          double localPoint = SymbolInfoDouble(symbol, SYMBOL_POINT);
          double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
          double volumeStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-         double currentLots = Lots;
-         if(EnableLotMultiplier && sellPositions > 0) {
-            currentLots = Lots * MathPow(LotMultiplier, sellPositions);
-            if(currentLots > MaxLotEntry) currentLots = MaxLotEntry;
-         }
-         currentLots = MathFloor(currentLots / volumeStep) * volumeStep;
-         double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-         double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-         currentLots = MathMax(minLot, MathMin(maxLot, currentLots));
-         double profit = sellInfo.totalProfit;
+         double currentLots = CalculateLotSize(symbol, POSITION_TYPE_SELL, sellPositions);
+         if(currentLots <= 0) return false;
+         
+         double positionProfit = sellInfo.totalProfit;
          double sprd = 0.0;
          if(!SymbolInfoDouble(symbol, (ENUM_SYMBOL_INFO_DOUBLE)SYMBOL_SPREAD, sprd)) sprd = 0.0;
          string status = "OK";
@@ -936,11 +1006,12 @@ void OpenSellOrder(string symbol, int idx) {
          if(trade.Sell(currentLots, symbol, bid, stopLoss, 0, expertName)) {
             // Update trade counters after successful trade
             UpdateTradeCounters(idx);
+            return true;
          } else {
             status = "FAIL";
             extra = IntegerToString(GetLastError());
          }
-         LogInfo(symbol, "SELL", localRsi, "S", currentLots, sellPositions, profit, sprd, status, extra);
+         LogInfo(symbol, "SELL", localRsi, "S", currentLots, sellPositions, positionProfit, sprd, status, extra);
       }
    } else {
       double sprd = 0.0;
@@ -948,6 +1019,44 @@ void OpenSellOrder(string symbol, int idx) {
       LogInfo(symbol, "SELL", localRsi, "S", Lots, sellPositions, sellInfo.totalProfit, sprd, "MAX", "dca");
    }
    sellInfoArray[idx] = sellInfo;
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate lot size based on selected method                        |
+//+------------------------------------------------------------------+
+double CalculateLotSize(string symbol, ENUM_POSITION_TYPE posType, int currentPositions) {
+   double lotSize = Lots;
+   double volumeStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   
+   switch(LotCalculationMethod) {
+      case LOT_FIXED:
+         lotSize = Lots;
+         break;
+         
+      case LOT_RISK_PERCENTAGE:
+         if(StopLossPoints > 0) {
+            double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+            double riskAmount = accountBalance * RiskPercent / 100.0;
+            double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+            double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+            
+            lotSize = NormalizeDouble(riskAmount / (StopLossPoints * tickValue / tickSize), 2);
+            
+            if(EnableLotMultiplier && currentPositions > 0) {
+               lotSize *= MathPow(LotMultiplier, currentPositions);
+            }
+         }
+         break;
+   }
+   
+   // Normalize lot size
+   lotSize = MathFloor(lotSize / volumeStep) * volumeStep;
+   lotSize = MathMax(minLot, MathMin(maxLot, lotSize));
+   
+   return lotSize;
 }
 
 //+------------------------------------------------------------------+
@@ -1050,7 +1159,7 @@ void CalculatePositionInfo(string symbol, ENUM_POSITION_TYPE positionType, Posit
 //+------------------------------------------------------------------+
 void UpdatePositionStatistics() {
    // Reset global variables
-   totalProfit = 0;
+   globalTotalProfit = 0;  // Use renamed variable
    currentTotalDD = 0;
    
    // Calculate statistics for each symbol
@@ -1301,11 +1410,17 @@ void CheckDCAConditions(string symbol, int idx) {
       bool adxCondition = !UseAdxFilter || (adxCache[idx].lastAdx > AdxMinThreshold && adxCache[idx].lastAdx < AdxMaxThreshold);
       bool maCondition = !UseMaFilter || (BuyAboveMa ? (bid > maCache[idx].lastMa) : (bid < maCache[idx].lastMa));
       bool emaRangeCondition = (EmaRangePoints == 0) || (bid < maCache[idx].lastMa - EmaRangePoints * point || bid > maCache[idx].lastMa + EmaRangePoints * point);
-      if(rsiCondition && adxCondition && maCondition && emaRangeCondition &&
+      bool bbCondition = !UseBBFilter || (
+         BBMode == BB_UPPER_LOWER ? 
+            (BuyAboveBB ? (bid > bbCache[idx].upperBand) : (bid < bbCache[idx].lowerBand)) :
+            (BuyAboveBB ? (bid > bbCache[idx].middleBand) : (bid < bbCache[idx].middleBand))
+      );
+      if(rsiCondition && adxCondition && maCondition && emaRangeCondition && bbCondition &&
          (MaxDailyBuyTradesPerPair == 0 || dailyBuyTrades[idx] < MaxDailyBuyTradesPerPair) &&
          (MaxBuyTradesPerPair == 0 || CountPositions(symbol, POSITION_TYPE_BUY) < MaxBuyTradesPerPair) &&
          (MaxTradesOnAccount == 0 || PositionsTotal() < MaxTradesOnAccount) &&
-         (MaxDailyTradesOnAccount == 0 || (dailyBuyTrades[idx] + dailySellTrades[idx]) < MaxDailyTradesOnAccount)) {
+         (MaxDailyTradesOnAccount == 0 || (dailyBuyTrades[idx] + dailySellTrades[idx]) < MaxDailyTradesOnAccount) &&
+         (currentTime - lastOpenTimeArray[idx] >= OpenTime)) {  // Ajout de la vérification OpenTime
          int positionsInCurrentBar = CountPositionsInCurrentBar(symbol, POSITION_TYPE_BUY);
          if(positionsInCurrentBar == 0) {
             OpenBuyOrder(symbol, idx);
@@ -1320,11 +1435,17 @@ void CheckDCAConditions(string symbol, int idx) {
       bool adxCondition = !UseAdxFilter || (adxCache[idx].lastAdx > AdxMinThreshold && adxCache[idx].lastAdx < AdxMaxThreshold);
       bool maCondition = !UseMaFilter || (SellBelowMa ? (ask < maCache[idx].lastMa) : (ask > maCache[idx].lastMa));
       bool emaRangeCondition = (EmaRangePoints == 0) || (ask < maCache[idx].lastMa - EmaRangePoints * point || ask > maCache[idx].lastMa + EmaRangePoints * point);
-      if(rsiCondition && adxCondition && maCondition && emaRangeCondition &&
+      bool bbCondition = !UseBBFilter || (
+         BBMode == BB_UPPER_LOWER ? 
+            (SellBelowBB ? (ask < bbCache[idx].lowerBand) : (ask > bbCache[idx].upperBand)) :
+            (SellBelowBB ? (ask < bbCache[idx].middleBand) : (ask > bbCache[idx].middleBand))
+      );
+      if(rsiCondition && adxCondition && maCondition && emaRangeCondition && bbCondition &&
          (MaxDailySellTradesPerPair == 0 || dailySellTrades[idx] < MaxDailySellTradesPerPair) &&
          (MaxSellTradesPerPair == 0 || CountPositions(symbol, POSITION_TYPE_SELL) < MaxSellTradesPerPair) &&
          (MaxTradesOnAccount == 0 || PositionsTotal() < MaxTradesOnAccount) &&
-         (MaxDailyTradesOnAccount == 0 || (dailyBuyTrades[idx] + dailySellTrades[idx]) < MaxDailyTradesOnAccount)) {
+         (MaxDailyTradesOnAccount == 0 || (dailyBuyTrades[idx] + dailySellTrades[idx]) < MaxDailyTradesOnAccount) &&
+         (currentTime - lastOpenTimeArray[idx] >= OpenTime)) {  // Ajout de la vérification OpenTime
          int positionsInCurrentBar = CountPositionsInCurrentBar(symbol, POSITION_TYPE_SELL);
          if(positionsInCurrentBar == 0) {
             OpenSellOrder(symbol, idx);
@@ -1731,7 +1852,7 @@ void UpdateInfoPanel() {
    }
    
    // Add after the account info section
-   if(EnableMaxDailyProfit) {
+   if(MaxDailyProfitPercent > 0) {
       string dailyProfitInfo = StringFormat("Daily Profit: %10.2f (%4.2f%%)", dailyProfit, dailyProfitPercent);
       color profitColor = dailyProfitPercent >= MaxDailyProfitPercent ? clrOrange : (dailyProfit > 0 ? clrLime : (dailyProfit < 0 ? clrRed : TextColor));
       UpdateLabel(prefix + "DailyProfit", dailyProfitInfo, x, y, profitColor);
@@ -1835,5 +1956,80 @@ void UpdateDailyProfit() {
    
    if(Debug) {
       Print("Daily Profit: ", dailyProfit, " (", dailyProfitPercent, "%)");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get Bollinger Bands values using MT5's built-in indicator         |
+//+------------------------------------------------------------------+
+double GetBB(string symbol, int period, double deviation, ENUM_BB_MODE mode) {
+   // Check if symbol is available
+   if(!SymbolSelect(symbol, true)) {
+      return -1;
+   }
+   
+   // Get BB indicator handle
+   int bbHandle = iBands(symbol, BBTimeframe, period, 0, deviation, PRICE_CLOSE);
+   if(bbHandle == INVALID_HANDLE) {
+      return -1;
+   }
+   
+   int maxWait = 5000; // Maximum 5 seconds
+   int waited = 0;
+   while(BarsCalculated(bbHandle) < period + 1) {
+      Sleep(100);
+      waited += 100;
+      if(waited >= maxWait) {
+         IndicatorRelease(bbHandle);
+         return -1;
+      }
+   }
+   
+   // Copy BB values
+   double upperBuffer[];
+   double middleBuffer[];
+   double lowerBuffer[];
+   
+   ArraySetAsSeries(upperBuffer, true);
+   ArraySetAsSeries(middleBuffer, true);
+   ArraySetAsSeries(lowerBuffer, true);
+   
+   int copiedUpper = CopyBuffer(bbHandle, 1, 0, period + 1, upperBuffer);
+   int copiedMiddle = CopyBuffer(bbHandle, 0, 0, period + 1, middleBuffer);
+   int copiedLower = CopyBuffer(bbHandle, 2, 0, period + 1, lowerBuffer);
+   
+   if(copiedUpper != period + 1 || copiedMiddle != period + 1 || copiedLower != period + 1) {
+      IndicatorRelease(bbHandle);
+      return -1;
+   }
+   
+   // Check if values are valid
+   if(upperBuffer[0] == 0 || upperBuffer[0] == EMPTY_VALUE ||
+      middleBuffer[0] == 0 || middleBuffer[0] == EMPTY_VALUE ||
+      lowerBuffer[0] == 0 || lowerBuffer[0] == EMPTY_VALUE) {
+      IndicatorRelease(bbHandle);
+      return -1;
+   }
+   
+   // Store values in cache
+   int idx = GetPairIndex(symbol);
+   if(idx >= 0) {
+      bbCache[idx].upperBand = upperBuffer[0];
+      bbCache[idx].middleBand = middleBuffer[0];
+      bbCache[idx].lowerBand = lowerBuffer[0];
+      bbCache[idx].lastBarTime = iTime(symbol, PERIOD_CURRENT, 0);
+      bbCache[idx].initialized = true;
+   }
+   
+   IndicatorRelease(bbHandle);
+   
+   // Return appropriate band based on mode
+   switch(mode) {
+      case BB_UPPER_LOWER:
+         return BuyAboveBB ? upperBuffer[0] : lowerBuffer[0];
+      case BB_MIDDLE:
+         return middleBuffer[0];
+      default:
+         return -1;
    }
 }
