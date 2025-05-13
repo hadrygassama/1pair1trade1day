@@ -130,6 +130,7 @@ input double   MaxDrawdownPercent = 30.0;    // Max drawdown before stopping new
 input bool     CloseAllOnEmergency = false;  // Close all trades on emergency drawdown
 input double   EmergencyDrawdownPercent = 0;  // Emergency drawdown to close all trades (%, 0 = disabled)
 input double   MaxDailyProfitPercent = 0;  // Max daily profit before stopping new trades (0 = disabled)
+input double   ProfitTargetAmount = 1000.0;  // Profit target amount in USD to close all positions
 
 input group    "=== Interface Settings ==="
 input bool     Info = true;            // Show panel
@@ -177,6 +178,8 @@ double currentBuyDD = 0;
 double currentSellDD = 0;
 double currentTotalDD = 0;
 const int PanelWidth = 1200;  // Panel width constant
+
+datetime lastProfitReset = 0; // Ajout pour le reset du profit target
 
 // Variables for daily trade tracking
 datetime lastDayReset = 0;    // Last time daily counters were reset
@@ -669,6 +672,11 @@ void OnDeinit(const int reason) {
 //| Expert tick function                                               |
 //+------------------------------------------------------------------+
 void OnTick() {
+   // Check profit target first
+   if(CheckProfitTarget()) {
+      return;
+   }
+   
    // Get current time using GMT
    currentTime = TimeGMT();
    TimeToStruct(currentTime, timeStruct);
@@ -2032,4 +2040,56 @@ double GetBB(string symbol, int period, double deviation, ENUM_BB_MODE mode) {
       default:
          return -1;
    }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate total account profit                                     |
+//+------------------------------------------------------------------+
+double CalculateTotalAccountProfit() {
+   double accountProfit = 0;
+   // Profits des positions ouvertes
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionSelectByTicket(PositionGetTicket(i))) {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic) {
+            accountProfit += PositionGetDouble(POSITION_PROFIT);
+         }
+      }
+   }
+   // Profits des deals fermés depuis le dernier reset
+   HistorySelect(lastProfitReset, TimeCurrent());
+   for(int i = HistoryDealsTotal() - 1; i >= 0; i--) {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(HistoryDealGetInteger(ticket, DEAL_MAGIC) == Magic) {
+         accountProfit += HistoryDealGetDouble(ticket, DEAL_PROFIT);
+      }
+   }
+   return accountProfit;
+}
+
+//+------------------------------------------------------------------+
+//| Check if profit target reached                                     |
+//+------------------------------------------------------------------+
+bool CheckProfitTarget() {
+   static datetime lastProfitTargetCheck = 0;
+   if(TimeCurrent() - lastProfitTargetCheck >= 1) { // Check once per second
+      double totalAccountProfit = CalculateTotalAccountProfit();
+      if(totalAccountProfit >= ProfitTargetAmount) {
+         Print(TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES|TIME_SECONDS) + 
+               "   PROFIT TARGET REACHED! Total Profit: " + DoubleToString(totalAccountProfit, 2) + " USD");
+         // Close all positions for each symbol
+         for(int i = 0; i < ArraySize(pairsArray); i++) {
+            CloseAllPositions(pairsArray[i]);
+            buyInfoArray[i].totalProfit = 0;
+            sellInfoArray[i].totalProfit = 0;
+            buyInfoArray[i].initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+            sellInfoArray[i].initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+            lastOpenTimeArray[i] = TimeCurrent();
+         }
+         lastProfitReset = TimeCurrent(); // RESET ICI
+         lastProfitTargetCheck = TimeCurrent();
+         return true;
+      }
+      lastProfitTargetCheck = TimeCurrent();
+   }
+   return false;
 }
