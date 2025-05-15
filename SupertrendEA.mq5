@@ -71,16 +71,17 @@ input double LotSize = 1;          // Fixed Lot Size
 input double RiskPercent = 1.0;      // Risk % per Trade
 input int      FixedTP = 0;       // Take Profit (points, 0=disabled)
 input int      FixedSL = 0;          // Stop Loss (points, 0=disabled)
-input int      Buffer = 1000;        // Order Buffer (points)
+input int      Buffer = 100;        // Order Buffer (points)
 input bool     CheckExistingPositions = true;  // Check Existing Positions
 
 // RSI Partial Close Settings
 input group "=== RSI Partial Close Settings ==="
-input bool     EnableRSIPartialClose = false;    // Enable RSI Partial Close
+input bool     EnableRSIPartialClose = true;    // Enable RSI Partial Close
+input ENUM_TIMEFRAMES RSI_Timeframe = PERIOD_CURRENT;  // RSI Timeframe
 input int      RSI_Period = 14;                  // RSI Period
 input double   RSI_UpperLevel = 70;             // RSI Upper Level for Partial Close
 input double   RSI_LowerLevel = 30;             // RSI Lower Level for Partial Close
-input double   PartialClosePercent = 30;        // Partial Close Percentage (0=disabled)
+input double   PartialClosePercent = 33;        // Partial Close Percentage (0=disabled)
 input int      MinProfitForPartialClose = 100;  // Min Profit for Partial Close (points, 0=disabled)
 
 // Trailing Stop
@@ -181,10 +182,20 @@ int OnInit()
         // Initialize RSI indicator if partial close is enabled
         if(EnableRSIPartialClose)
         {
-            pairs[i].rsiHandle = iRSI(pairs[i].symbol, Timeframe, RSI_Period, PRICE_CLOSE);
+            int attempt = 0;
+            int maxAttempts = 10; // Added for the new RSI_Timeframe parameter
+            while(attempt < maxAttempts)
+            {
+                pairs[i].rsiHandle = iRSI(pairs[i].symbol, RSI_Timeframe, RSI_Period, PRICE_CLOSE);
+                if(pairs[i].rsiHandle != INVALID_HANDLE)
+                    break;
+                Sleep(1000); // Attendre 1 seconde avant de réessayer
+                attempt++;
+            }
+            
             if(pairs[i].rsiHandle == INVALID_HANDLE)
             {
-                Print("Error initializing RSI indicator for ", pairs[i].symbol);
+                Print("Error initializing RSI indicator for ", pairs[i].symbol, " after ", maxAttempts, " attempts");
                 return(INIT_FAILED);
             }
         }
