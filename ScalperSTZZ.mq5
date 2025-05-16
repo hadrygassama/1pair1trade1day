@@ -52,12 +52,6 @@ input ENUM_TIMEFRAMES Timeframe = PERIOD_CURRENT;  // Timeframe
 input int    ATR_Period = 10;        // ATR Period
 input double ATR_Multiplier = 10.0;   // ATR Multiplier
 
-input group "=== ZigZag Settings ==="
-input ENUM_TIMEFRAMES ZigZag_Timeframe = PERIOD_CURRENT;  // ZigZag Timeframe
-input int    ZigZag_Depth = 12;      // Depth
-input int    ZigZag_Deviation = 5;   // Deviation
-input int    ZigZag_Backstep = 3;    // Backstep
-
 // === Trading Settings ===
 input group "=== Trading Settings ==="
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Trade Direction
@@ -116,17 +110,8 @@ input int      Slippage = 3;           // Slippage (points)
 CTrade trade;                         // Trading object
 string CurrentSymbol;                 // Current symbol
 int stHandle;                         // Supertrend indicator handle
-int zzHandle;                         // ZigZag indicator handle
 int totalBars;                        // Total number of bars
 double lotSize;                       // Lot size
-double lastZigZagHigh = 0;           // Last ZigZag high
-double lastZigZagLow = 0;            // Last ZigZag low
-double previousZigZagHigh = 0;       // Previous ZigZag high
-double previousZigZagLow = 0;        // Previous ZigZag low
-bool isFirstSignalAfterBullish = false;  // First signal after bullish Supertrend
-bool isFirstSignalAfterBearish = false;  // First signal after bearish Supertrend
-double lastLowBeforeBullish = 0;     // First low after bullish trend
-double lastHighBeforeBearish = 0;    // First high after bearish trend
 
 // Scalper variables
 datetime lastOpenTime = 0;
@@ -185,26 +170,6 @@ int OnInit()
         return(INIT_FAILED);
     }
     
-    zzHandle = iCustom(CurrentSymbol, ZigZag_Timeframe, "ZigZag.ex5", ZigZag_Depth, ZigZag_Deviation, ZigZag_Backstep);
-    
-    if(zzHandle == INVALID_HANDLE)
-    {
-        Print("Error initializing ZigZag indicator for " + CurrentSymbol + ". Error code: " + IntegerToString(GetLastError()));
-        return(INIT_FAILED);
-    }
-    
-    // Add indicators to chart for synchronization
-    if(!ChartIndicatorAdd(ChartID(), 0, stHandle))
-    {
-        Print("Error: Cannot add Supertrend to chart");
-        return(INIT_FAILED);
-    }
-    if(!ChartIndicatorAdd(ChartID(), 0, zzHandle))
-    {
-        Print("Error: Cannot add ZigZag to chart");
-        return(INIT_FAILED);
-    }
-    
     totalBars = iBars(CurrentSymbol, Timeframe);
     lotSize = LotSize;
     
@@ -221,8 +186,6 @@ void OnDeinit(const int reason)
 {
     if(stHandle != INVALID_HANDLE)
         IndicatorRelease(stHandle);
-    if(zzHandle != INVALID_HANDLE)
-        IndicatorRelease(zzHandle);
     EventKillTimer();
     
 }
@@ -1201,10 +1164,8 @@ void OnTick()
     {
         totalBars = bars;
         
-        double st[], zigzag[], zigzagHighLow[];
+        double st[];
         ArrayResize(st, 3);
-        ArrayResize(zigzag, 3);
-        ArrayResize(zigzagHighLow, 3);
         ArraySetAsSeries(st, true);
         
         // Copy Supertrend buffer with retry
@@ -1225,36 +1186,6 @@ void OnTick()
             return;
         }
         
-        // Copy ZigZag main buffer with retry
-        copied = 0;
-        for(int retry = 0; retry < maxRetries; retry++)
-        {
-            copied = CopyBuffer(zzHandle, 0, 0, 3, zigzag);
-            if(copied > 0) break;
-            Sleep(retryDelay);
-        }
-        
-        if(copied <= 0)
-        {
-            Print("Error copying ZigZag buffer. Error code: " + IntegerToString(GetLastError()));
-            return;
-        }
-        
-        // Copy ZigZag HighLow buffer with retry
-        copied = 0;
-        for(int retry = 0; retry < maxRetries; retry++)
-        {
-            copied = CopyBuffer(zzHandle, 1, 0, 3, zigzagHighLow);
-            if(copied > 0) break;
-            Sleep(retryDelay);
-        }
-        
-        if(copied <= 0)
-        {
-            Print("Error copying ZigZag HighLow buffer. Error code: " + IntegerToString(GetLastError()));
-            return;
-        }
-        
         double close1 = iClose(CurrentSymbol, Timeframe, 1);
         double close2 = iClose(CurrentSymbol, Timeframe, 2);
         
@@ -1262,24 +1193,6 @@ void OnTick()
         {
             Print("Error getting close prices");
             return;
-        }
-        
-        // Mise à jour des niveaux ZigZag
-        if(zigzagHighLow[0] != 0.0)
-        {
-            if(lastZigZagHigh != zigzag[0] && zigzag[0] != 0.0)
-            {
-                previousZigZagHigh = lastZigZagHigh;
-                lastZigZagHigh = zigzag[0];
-            }
-        }
-        else
-        {
-            if(lastZigZagLow != zigzag[0] && zigzag[0] != 0.0)
-            {
-                previousZigZagLow = lastZigZagLow;
-                lastZigZagLow = zigzag[0];
-            }
         }
         
         // Vérifier la tendance Supertrend
