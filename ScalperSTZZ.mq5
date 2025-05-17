@@ -42,39 +42,29 @@ enum ENUM_SUPERTREND_MODE
 //+------------------------------------------------------------------+
 //| Input Parameters                                                   |
 //+------------------------------------------------------------------+
-// === Basic Settings ===
-input group "=== Basic Settings ==="
+// === Expert Settings ===
+input group "=== Expert Settings ==="
 input int      Magic = 548762;         // Magic Number
-
-// === Indicator Settings ===
-input group "=== Supertrend Settings ==="
 input ENUM_TIMEFRAMES Timeframe = PERIOD_CURRENT;  // Timeframe
+
+// === Trading Direction and Mode ===
+input group "=== Trading Direction and Mode ==="
+input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Trade Direction
+input ENUM_SUPERTREND_MODE SupertrendMode = SUPERTREND_FILTER_ONLY;  // Supertrend Mode
+input ENUM_PRICE_CONDITION PriceCondition = PRICE_CONDITION_BOTH;  // Price condition for entries
+
+// === Supertrend Settings ===
+input group "=== Supertrend Settings ==="
 input int    ATR_Period = 10;        // ATR Period
 input double ATR_Multiplier = 10.0;   // ATR Multiplier
 
-// === Trading Settings ===
-input group "=== Trading Settings ==="
-input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Trade Direction
+// === Position Size Settings ===
+input group "=== Position Size Settings ==="
 input ENUM_LOT_TYPE LotType = LOT_TYPE_CURRENCY;  // Lot size type
 input double LotSize = 0.1;          // Fixed lot size
 input double CurrencyAmount = 10000;  // Amount per lot (in account currency)
 input double BaseLot = 0.01;         // Base lot size for currency amount
 input double RiskPercent = 1;      // Risk percentage per trade
-input ENUM_SUPERTREND_MODE SupertrendMode = SUPERTREND_FILTER_ONLY;  // Supertrend Mode
-input ENUM_PRICE_CONDITION PriceCondition = PRICE_CONDITION_BOTH;  // Price condition for entries
-
-// === Trading Limits ===
-input group "=== Trading Limits ==="
-input int      MaxDailyBuyTrades = 0;    // Max daily buy trades (0=unlimited)
-input int      MaxDailySellTrades = 0;   // Max daily sell trades (0=unlimited)
-input int      MaxDailyTrades = 0;       // Max total daily trades (0=unlimited)
-input int      MaxBuyTrades = 0;         // Max buy trades (0=unlimited)
-input int      MaxSellTrades = 0;        // Max sell trades (0=unlimited)
-input int      MaxTrades = 0;            // Max total trades (0=unlimited)
-input double   DailyTargetCurrency = 0.0;  // Daily Target (Currency, 0=disabled)
-input double   DailyTargetPercent = 0.0;   // Daily Target (Percent, 0=disabled)
-input double   DailyLossCurrency = 0.0;    // Daily Loss (Currency, 0=disabled)
-input double   DailyLossPercent = 0.0;     // Daily Loss (Percent, 0=disabled)
 
 // === Order Management ===
 input group "=== Order Management ==="
@@ -88,6 +78,19 @@ input group "=== Trailing Stop Settings ==="
 input int      Tral = 20;             // Trailing stop (in pips, 0=disabled)
 input int      TralStart = 10;        // Trailing start (in pips, 0=disabled)
 input double   TakeProfit = 30;       // Take Profit (in pips, 0=disabled)
+
+// === Trading Limits ===
+input group "=== Trading Limits ==="
+input int      MaxDailyBuyTrades = 0;    // Max daily buy trades (0=unlimited)
+input int      MaxDailySellTrades = 0;   // Max daily sell trades (0=unlimited)
+input int      MaxDailyTrades = 0;       // Max total daily trades (0=unlimited)
+input int      MaxBuyTrades = 0;         // Max buy trades (0=unlimited)
+input int      MaxSellTrades = 0;        // Max sell trades (0=unlimited)
+input int      MaxTrades = 0;            // Max total trades (0=unlimited)
+input double   DailyTargetCurrency = 0.0;  // Daily Target (Currency, 0=disabled)
+input double   DailyTargetPercent = 0.0;   // Daily Target (Percent, 0=disabled)
+input double   DailyLossCurrency = 0.0;    // Daily Loss (Currency, 0=disabled)
+input double   DailyLossPercent = 0.0;     // Daily Loss (Percent, 0=disabled)
 
 // === Trading Hours ===
 input group "=== Trading Hours ==="
@@ -125,11 +128,6 @@ int lastDealsCount = 0;
 int lastPositionsCount = 0;
 double lastCalculatedProfit = 0.0;
 
-// Logging variables
-datetime lastLogTime = 0;
-int logInterval = 5;  // Intervalle minimum entre les logs en secondes
-bool logErrors = true;            // Log des erreurs
-
 //+------------------------------------------------------------------+
 //| Expert initialization function                                     |
 //+------------------------------------------------------------------+
@@ -164,9 +162,10 @@ int OnInit()
     // Initialize indicators
     stHandle = iCustom(CurrentSymbol, Timeframe, "SupertrendIndicator.ex5", ATR_Period, ATR_Multiplier);
     
+    // Check if indicator is initialized successfully
     if(stHandle == INVALID_HANDLE)
     {
-        Print("Error initializing Supertrend indicator for " + CurrentSymbol + ". Error code: " + IntegerToString(GetLastError()));
+        Print("Error initializing Supertrend indicator. Error code: " + IntegerToString(GetLastError()));
         return(INIT_FAILED);
     }
     
@@ -186,8 +185,8 @@ void OnDeinit(const int reason)
 {
     if(stHandle != INVALID_HANDLE)
         IndicatorRelease(stHandle);
-    EventKillTimer();
     
+    EventKillTimer();
 }
 
 //+------------------------------------------------------------------+
@@ -224,10 +223,8 @@ void OnTimer()
     {
         totalBars = bars;
         
-        double st[], zigzag[], zigzagHighLow[];
+        double st[];
         ArrayResize(st, 3);
-        ArrayResize(zigzag, 3);
-        ArrayResize(zigzagHighLow, 3);
         ArraySetAsSeries(st, true);
         
         // Copy Supertrend buffer with retry
@@ -248,36 +245,6 @@ void OnTimer()
             return;
         }
         
-        // Copy ZigZag main buffer with retry
-        copied = 0;
-        for(int retry = 0; retry < maxRetries; retry++)
-        {
-            copied = CopyBuffer(zzHandle, 0, 0, 3, zigzag);
-            if(copied > 0) break;
-            Sleep(retryDelay);
-        }
-        
-        if(copied <= 0)
-        {
-            Print("Error copying ZigZag buffer. Error code: " + IntegerToString(GetLastError()));
-            return;
-        }
-        
-        // Copy ZigZag HighLow buffer with retry
-        copied = 0;
-        for(int retry = 0; retry < maxRetries; retry++)
-        {
-            copied = CopyBuffer(zzHandle, 1, 0, 3, zigzagHighLow);
-            if(copied > 0) break;
-            Sleep(retryDelay);
-        }
-        
-        if(copied <= 0)
-        {
-            Print("Error copying ZigZag HighLow buffer. Error code: " + IntegerToString(GetLastError()));
-            return;
-        }
-        
         double close1 = iClose(CurrentSymbol, Timeframe, 1);
         double close2 = iClose(CurrentSymbol, Timeframe, 2);
         
@@ -289,24 +256,6 @@ void OnTimer()
         
         // Gérer les trailing stops
         HandleTrailingStopsScalper();
-        
-        // Mise à jour des niveaux ZigZag
-        if(zigzagHighLow[0] != 0.0)
-        {
-            if(lastZigZagHigh != zigzag[0] && zigzag[0] != 0.0)
-            {
-                previousZigZagHigh = lastZigZagHigh;
-                lastZigZagHigh = zigzag[0];
-            }
-        }
-        else
-        {
-            if(lastZigZagLow != zigzag[0] && zigzag[0] != 0.0)
-            {
-                previousZigZagLow = lastZigZagLow;
-                lastZigZagLow = zigzag[0];
-            }
-        }
         
         // Vérifier la tendance Supertrend
         bool isSupertrendBullish = close1 > st[1];
@@ -449,7 +398,7 @@ bool CheckScalperEntryConditions(double &st[], double close1)
 void OpenBuyOrder()
 {
     if(TradeDirection == TRADE_SELL_ONLY) {
-        Print("OpenBuyOrder - Trading direction ne permet pas les achats", true);
+        LogMessage("OpenBuyOrder - Trading direction ne permet pas les achats", true);
         return;
     }
     
@@ -468,12 +417,11 @@ void OpenBuyOrder()
             
             if(!trade.Buy(lotSize, CurrentSymbol, 0, sl, tp, "Buy Order"))
             {
-                Print("OpenBuyOrder - Échec de l'ordre. Erreur: " + IntegerToString(GetLastError()), true);
+                LogMessage("OpenBuyOrder - Échec de l'ordre. Erreur: " + IntegerToString(GetLastError()), true);
             }
             else
             {
                 lastBuyPrice = SymbolInfoDouble(CurrentSymbol, SYMBOL_ASK);
-                Print("OpenBuyOrder - Nouveau prix d'achat: " + DoubleToString(lastBuyPrice, _Digits), true);
             }
         }
     }
@@ -485,7 +433,7 @@ void OpenBuyOrder()
 void OpenSellOrder()
 {
     if(TradeDirection == TRADE_BUY_ONLY) {
-        Print("OpenSellOrder - Trading direction ne permet pas les ventes", true);
+        LogMessage("OpenSellOrder - Trading direction ne permet pas les ventes", true);
         return;
     }
     
@@ -504,12 +452,11 @@ void OpenSellOrder()
             
             if(!trade.Sell(lotSize, CurrentSymbol, 0, sl, tp, "Sell Order"))
             {
-                Print("OpenSellOrder - Échec de l'ordre. Erreur: " + IntegerToString(GetLastError()), true);
+                LogMessage("OpenSellOrder - Échec de l'ordre. Erreur: " + IntegerToString(GetLastError()), true);
             }
             else
             {
                 lastSellPrice = SymbolInfoDouble(CurrentSymbol, SYMBOL_BID);
-                Print("OpenSellOrder - Nouveau prix de vente: " + DoubleToString(lastSellPrice, _Digits), true);
             }
         }
     }
@@ -532,6 +479,9 @@ void CloseAllBuyPositions()
             }
         }
     }
+    // Réinitialiser les prix de référence après avoir fermé toutes les positions d'achat
+    lastBuyPrice = 0;
+    lastSellPrice = 0;
 }
 
 //+------------------------------------------------------------------+
@@ -551,6 +501,9 @@ void CloseAllSellPositions()
             }
         }
     }
+    // Réinitialiser les prix de référence après avoir fermé toutes les positions de vente
+    lastBuyPrice = 0;
+    lastSellPrice = 0;
 }
 
 //+------------------------------------------------------------------+
@@ -732,6 +685,9 @@ void HandleTrailingStopsScalper()
                         }
                     }
                 }
+                // Réinitialiser les prix de référence après avoir atteint le profit
+                lastBuyPrice = 0;
+                lastSellPrice = 0;
             }
         }
     }
@@ -771,6 +727,9 @@ void HandleTrailingStopsScalper()
                         }
                     }
                 }
+                // Réinitialiser les prix de référence après avoir atteint le profit
+                lastBuyPrice = 0;
+                lastSellPrice = 0;
             }
         }
     }
@@ -796,32 +755,11 @@ bool IsWithinTradingHours()
     if(endTimeInMinutes < startTimeInMinutes)
     {
         isWithinHours = (currentTimeInMinutes >= startTimeInMinutes || currentTimeInMinutes <= endTimeInMinutes);
-        Print("=== VÉRIFICATION HEURES DE TRADING ===\n",
-              "Heure actuelle: ", time.hour, ":", time.min, "\n",
-              "Période de trading: ", TimeStartHour, ":", TimeStartMinute, " - ", TimeEndHour, ":", TimeEndMinute, "\n",
-              "Statut: ", isWithinHours ? "DANS LES HEURES" : "HORS DES HEURES", "\n",
-              "Période passe minuit: OUI", "\n",
-              "Minutes actuelles: ", currentTimeInMinutes, "\n",
-              "Minutes de début: ", startTimeInMinutes, "\n",
-              "Minutes de fin: ", endTimeInMinutes);
     }
     // Si la période de trading est dans la même journée
     else
     {
         isWithinHours = (currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes <= endTimeInMinutes);
-        Print("=== VÉRIFICATION HEURES DE TRADING ===\n",
-              "Heure actuelle: ", time.hour, ":", time.min, "\n",
-              "Période de trading: ", TimeStartHour, ":", TimeStartMinute, " - ", TimeEndHour, ":", TimeEndMinute, "\n",
-              "Statut: ", isWithinHours ? "DANS LES HEURES" : "HORS DES HEURES", "\n",
-              "Période passe minuit: NON", "\n",
-              "Minutes actuelles: ", currentTimeInMinutes, "\n",
-              "Minutes de début: ", startTimeInMinutes, "\n",
-              "Minutes de fin: ", endTimeInMinutes);
-    }
-    
-    if(!isWithinHours)
-    {
-        Print("TRADING BLOQUÉ - Hors des heures de trading");
     }
     
     return isWithinHours;
@@ -832,6 +770,8 @@ bool IsWithinTradingHours()
 //+------------------------------------------------------------------+
 void LogMessage(string message, bool forceLog = false)
 {
+    if(!forceLog) return; // Only log errors
+    
     datetime currentTime = TimeCurrent();
     string log = TimeToString(currentTime, TIME_DATE|TIME_MINUTES|TIME_SECONDS) + " | " + message;
     
