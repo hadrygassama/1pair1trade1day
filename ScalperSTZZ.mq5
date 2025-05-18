@@ -27,16 +27,32 @@ enum ENUM_TRADE_DIRECTION {
    TRADE_BOTH           // Buy and Sell
 };
 
+enum ENUM_SUPERTREND_MODE
+{
+    SUPERTREND_FILTER_AND_CLOSE = 1,   // Supertrend Filter & Close on change (active only if UseSupertrend is true)
+    SUPERTREND_FILTER_ONLY = 2         // Supertrend Filter Only (active only if UseSupertrend is true)
+};
+
+enum ENUM_MA_MODE
+{
+    MA_FILTER_AND_CLOSE = 1,   // MA Filter & Close on change (active only if UseMA200 is true)
+    MA_FILTER_ONLY = 2         // MA Filter Only (active only if UseMA200 is true)
+};
+
+enum ENUM_RSI_MODE
+{
+    RSI_FILTER_AND_CLOSE = 1,   // RSI Filter & Close on change (active only if UseRSI is true)
+    RSI_FILTER_ONLY = 2         // RSI Filter Only (active only if UseRSI is true)
+};
+
+enum ENUM_RSI_LOGIC {
+    RSI_CONTINUATION = 1,  // Continuation
+    RSI_REVERSAL = 2       // Reversal
+};
+
 enum ENUM_PRICE_CONDITION {
     PRICE_CONDITION_BOTH = 0,         // Trade above and below
     PRICE_CONDITION_ABOVE_BELOW = 1   // Trade only above buy and Trade only below sell
-};
-
-enum ENUM_SUPERTREND_MODE
-{
-    SUPERTREND_DISABLED = 0,           // Disable Supertrend Filter
-    SUPERTREND_FILTER_AND_CLOSE = 1,   // Supertrend Filter & Close on change
-    SUPERTREND_FILTER_ONLY = 2         // Supertrend Filter Only
 };
 
 //+------------------------------------------------------------------+
@@ -50,13 +66,29 @@ input ENUM_TIMEFRAMES Timeframe = PERIOD_CURRENT;  // Timeframe
 // === Trading Direction and Mode ===
 input group "=== Trading Direction and Mode ==="
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_BOTH;  // Trade Direction
-input ENUM_SUPERTREND_MODE SupertrendMode = SUPERTREND_FILTER_ONLY;  // Supertrend Mode
 input ENUM_PRICE_CONDITION PriceCondition = PRICE_CONDITION_BOTH;  // Price condition for entries
 
 // === Supertrend Settings ===
 input group "=== Supertrend Settings ==="
-input int    ATR_Period = 10;        // ATR Period
-input double ATR_Multiplier = 10.0;   // ATR Multiplier
+input bool    UseSupertrend = true;     // Utiliser le filtre Supertrend
+input ENUM_SUPERTREND_MODE SupertrendMode = SUPERTREND_FILTER_ONLY;  // Supertrend Mode
+input int    ATR_Period = 3;        // ATR Period
+input double ATR_Multiplier = 16.0;   // ATR Multiplier
+
+// === MA 200 Filter Settings ===
+input group "=== MA 200 Filter Settings ==="
+input bool    UseMA200 = true;          // Utiliser le filtre MA 200
+input ENUM_MA_MODE MAMode = MA_FILTER_ONLY;  // MA Mode
+input int MAPeriod = 200;                    // Période de la MA
+
+// === RSI Filter Settings ===
+input group "=== RSI Filter Settings ==="
+input bool    UseRSI = true;          // Utiliser le filtre RSI
+input ENUM_RSI_MODE RSIMode = RSI_FILTER_ONLY;  // RSI Mode
+input ENUM_RSI_LOGIC RSILogic = RSI_CONTINUATION;  // RSI Logic
+input int RSIPeriod = 14;             // Période du RSI
+input int RSIOverbought = 70;         // Niveau de surachat
+input int RSIOversold = 30;           // Niveau de survente
 
 // === Position Size Settings ===
 input group "=== Position Size Settings ==="
@@ -70,14 +102,13 @@ input double RiskPercent = 1;      // Risk percentage per trade
 input group "=== Order Management ==="
 input int      FixedTP = 0;       // Take Profit (points, 0=disabled)
 input int      FixedSL = 0;          // Stop Loss (points, 0=disabled)
-input int      OpenTime = 1;          // Time between orders (seconds)
-input int      PipsStep = 1;          // Price movement step (in pips)
+input int      OpenTime = 600;          // Time between orders (seconds)
 
 // === Trailing Stop Settings ===
 input group "=== Trailing Stop Settings ==="
-input int      Tral = 20;             // Trailing stop (in pips, 0=disabled)
-input int      TralStart = 10;        // Trailing start (in pips, 0=disabled)
-input double   TakeProfit = 30;       // Take Profit (in pips, 0=disabled)
+input int      TrailingStopPips = 25;             // Trailing stop distance (in pips, 0=disabled)
+input int      TrailingStartPips = 10;        // Distance to start trailing (in pips, 0=disabled)
+input double   TakeProfit = 45;       // Take Profit (in pips, 0=disabled)
 
 // === Trading Limits ===
 input group "=== Trading Limits ==="
@@ -98,7 +129,7 @@ input int      TimeStartHour = 0;      // Start hour
 input int      TimeStartMinute = 0;    // Start minute
 input int      TimeEndHour = 23;       // End hour
 input int      TimeEndMinute = 59;     // End minute
-input bool     AutoDetectBrokerOffset = false;  // Auto-detect GMT offset
+input bool     AutoDetectBrokerOffset = true;  // Auto-detect GMT offset
 input bool     BrokerIsAheadOfGMT = true;       // Broker ahead of GMT
 input int      ManualBrokerOffset = 3;          // Manual GMT offset (hours)
 
@@ -113,20 +144,35 @@ input int      Slippage = 3;           // Slippage (points)
 CTrade trade;                         // Trading object
 string CurrentSymbol;                 // Current symbol
 int stHandle;                         // Supertrend indicator handle
+int maHandle;                         // MA 200 indicator handle
+int rsiHandle;                        // RSI indicator handle
 int totalBars;                        // Total number of bars
 double lotSize;                       // Lot size
 
 // Scalper variables
 datetime lastOpenTime = 0;
 double lastBidPrice = 0;
-double lastBuyPrice = 0;    // Dernier prix d'achat
-double lastSellPrice = 0;   // Dernier prix de vente
+double lastBuyPrice = 0;    // Last buy price
+double lastSellPrice = 0;   // Last sell price
 
 // Trading limits variables
 datetime lastCalculationTime = 0;
 int lastDealsCount = 0;
 int lastPositionsCount = 0;
 double lastCalculatedProfit = 0.0;
+
+// RSI state tracking
+enum ENUM_RSI_STATE {
+    RSI_BEARISH = 0,  // RSI < RSIOversold
+    RSI_BULLISH = 1   // RSI > RSIOverbought
+};
+ENUM_RSI_STATE lastRSIState = RSI_BEARISH;  // État initial bearish
+ENUM_RSI_STATE previousRSIState = RSI_BEARISH;  // Dernier état connu
+
+struct TradingConditions {
+    bool canBuy;
+    bool canSell;
+};
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                     |
@@ -169,11 +215,28 @@ int OnInit()
         return(INIT_FAILED);
     }
     
+    // Initialize MA 200
+    maHandle = iMA(CurrentSymbol, Timeframe, MAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+    
+    // Check if MA 200 is initialized successfully
+    if(maHandle == INVALID_HANDLE)
+    {
+        Print("Error initializing MA 200 indicator. Error code: " + IntegerToString(GetLastError()));
+        return(INIT_FAILED);
+    }
+    
+    // Initialize RSI
+    rsiHandle = iRSI(CurrentSymbol, Timeframe, RSIPeriod, PRICE_CLOSE);
+    
+    // Check if RSI is initialized successfully
+    if(rsiHandle == INVALID_HANDLE)
+    {
+        Print("Error initializing RSI indicator. Error code: " + IntegerToString(GetLastError()));
+        return(INIT_FAILED);
+    }
+    
     totalBars = iBars(CurrentSymbol, Timeframe);
     lotSize = LotSize;
-    
-    // Enable timer for reliable bar detection
-    EventSetTimer(1);
     
     return(INIT_SUCCEEDED);
 }
@@ -185,101 +248,107 @@ void OnDeinit(const int reason)
 {
     if(stHandle != INVALID_HANDLE)
         IndicatorRelease(stHandle);
-    
-    EventKillTimer();
+    if(maHandle != INVALID_HANDLE)
+        IndicatorRelease(maHandle);
+    if(rsiHandle != INVALID_HANDLE)
+        IndicatorRelease(rsiHandle);
 }
 
 //+------------------------------------------------------------------+
-//| Timer function for processing trading logic                        |
+//| Expert tick function                                               |
 //+------------------------------------------------------------------+
-void OnTimer()
+void OnTick()
 {
+    // Vérifier si on est dans les heures de trading AVANT toute opération
     if(!IsWithinTradingHours())
-        return;
-        
-    // Vérifier si l'objectif quotidien est atteint
-    if(IsDailyTargetReached())
     {
-        CloseAllBuyPositions();
-        CloseAllSellPositions();
-        return;
+        return; // Sortir immédiatement sans faire aucune opération
     }
     
     // Vérifier si le spread est acceptable
     double currentSpread = SymbolInfoInteger(CurrentSymbol, SYMBOL_SPREAD) * Point();
     if(currentSpread > MaxSpread)
     {
+        Print("SPREAD TROP ÉLEVÉ: ", currentSpread, " > ", MaxSpread);
         return;
     }
     
-    // Vérifier si le trading est autorisé
-    if(!IsTradeAllowed(true))
+    // Vérifier si l'objectif quotidien est atteint
+    if(IsDailyTargetReached())
     {
+        Print("OBJECTIF QUOTIDIEN ATTEINT - Fermeture des positions");
+        CloseAllBuyPositions();
+        CloseAllSellPositions();
         return;
     }
-        
-    int bars = iBars(CurrentSymbol, Timeframe);
-    if(totalBars != bars)
+    
+    // Gérer les trailing stops et les positions existantes
+    HandleTrailingStopsScalper();
+    ManagePositions();
+    
+    // Copier les valeurs des indicateurs
+    double st[], ma[], close[], rsi[];
+    ArrayResize(st, 3);
+    ArrayResize(ma, 3);
+    ArrayResize(close, 3);
+    ArrayResize(rsi, 3);
+    ArraySetAsSeries(st, true);
+    ArraySetAsSeries(ma, true);
+    ArraySetAsSeries(close, true);
+    ArraySetAsSeries(rsi, true);
+    
+    // Copy Supertrend buffer with retry
+    int maxRetries = 5;
+    int retryDelay = 100; // milliseconds
+    int copied = 0;
+    
+    for(int retry = 0; retry < maxRetries; retry++)
     {
-        totalBars = bars;
-        
-        double st[];
-        ArrayResize(st, 3);
-        ArraySetAsSeries(st, true);
-        
-        // Copy Supertrend buffer with retry
-        int maxRetries = 5;
-        int retryDelay = 100; // milliseconds
-        int copied = 0;
-        
-        for(int retry = 0; retry < maxRetries; retry++)
+        copied = CopyBuffer(stHandle, 0, 0, 3, st);
+        if(copied > 0) break;
+        Sleep(retryDelay);
+    }
+    
+    if(copied <= 0)
+    {
+        Print("Error copying Supertrend buffer. Error code: " + IntegerToString(GetLastError()));
+        return;
+    }
+    
+    // Copy MA 200 buffer
+    if(CopyBuffer(maHandle, 0, 0, 3, ma) <= 0)
+    {
+        Print("Error copying MA 200 buffer. Error code: " + IntegerToString(GetLastError()));
+        return;
+    }
+    
+    // Copier les prix de clôture
+    if(CopyClose(CurrentSymbol, Timeframe, 0, 3, close) <= 0)
+    {
+        Print("Error copying close prices");
+        return;
+    }
+    
+    // Copier les valeurs du RSI
+    if(CopyBuffer(rsiHandle, 0, 0, 3, rsi) <= 0)
+    {
+        Print("Error copying RSI buffer");
+        return;
+    }
+    
+    // Vérifier les conditions d'entrée
+    TradingConditions conditions = CheckScalperEntryConditions(st, ma, close);
+    
+    // Ouvrir de nouvelles positions si les conditions sont remplies
+    if(IsTradeAllowed(true))
+    {
+        if(conditions.canBuy)
         {
-            copied = CopyBuffer(stHandle, 0, 0, 3, st);
-            if(copied > 0) break;
-            Sleep(retryDelay);
+            OpenPosition(true);
         }
-        
-        if(copied <= 0)
+        else if(conditions.canSell)
         {
-            Print("Error copying Supertrend buffer. Error code: " + IntegerToString(GetLastError()));
-            return;
-        }
-        
-        double close1 = iClose(CurrentSymbol, Timeframe, 1);
-        double close2 = iClose(CurrentSymbol, Timeframe, 2);
-        
-        if(close1 == 0 || close2 == 0)
-        {
-            Print("Error getting close prices");
-            return;
-        }
-        
-        // Gérer les trailing stops
-        HandleTrailingStopsScalper();
-        
-        // Vérifier la tendance Supertrend
-        bool isSupertrendBullish = close1 > st[1];
-        bool isSupertrendBearish = close1 < st[1];
-        
-        // Vérifier les conditions d'entrée une seule fois
-        bool canTrade = CheckScalperEntryConditions(st, close1);
-        
-        // Gérer les positions existantes
-        ManagePositions();
-        
-        // Ouvrir de nouvelles positions si les conditions sont remplies
-        if(canTrade && IsTradeAllowed(true))
-        {
-            if(SupertrendMode == SUPERTREND_DISABLED || 
-               (SupertrendMode != SUPERTREND_DISABLED && isSupertrendBullish))
-            {
-                OpenPosition(true);
-            }
-            else if(SupertrendMode == SUPERTREND_DISABLED || 
-                    (SupertrendMode != SUPERTREND_DISABLED && isSupertrendBearish))
-            {
-                OpenPosition(false);
-            }
+            OpenPosition(false);
         }
     }
 }
@@ -287,109 +356,118 @@ void OnTimer()
 //+------------------------------------------------------------------+
 //| Check Scalper Entry Conditions                                     |
 //+------------------------------------------------------------------+
-bool CheckScalperEntryConditions(double &st[], double close1)
+TradingConditions CheckScalperEntryConditions(double &st[], double &ma[], double &close[])
 {
-    // Check time conditions for new trades
-    datetime currentTime = TimeCurrent();
-    if(lastOpenTime == 0)
+    TradingConditions conditions;
+    conditions.canBuy = false;
+    conditions.canSell = false;
+    
+    // Sauvegarder l'état précédent avant de le modifier
+    previousRSIState = lastRSIState;
+    
+    // Vérifier les conditions de la Supertrend
+    bool stBullish = close[1] > st[1];
+    bool stBearish = close[1] < st[1];
+    
+    // Vérifier les conditions de la MA 200
+    bool maBullish = close[1] > ma[1];  // Prix au-dessus de la MA200
+    bool maBearish = close[1] < ma[1];  // Prix en-dessous de la MA200
+    
+    // Vérifier les conditions du RSI
+    double rsi[];
+    ArrayResize(rsi, 3);
+    ArraySetAsSeries(rsi, true);
+    
+    if(CopyBuffer(rsiHandle, 0, 0, 3, rsi) <= 0)
     {
-        lastOpenTime = currentTime;
-        lastBidPrice = SymbolInfoDouble(CurrentSymbol, SYMBOL_BID);
-        return false;
+        Print("Error copying RSI buffer");
+        return conditions;
     }
     
-    // Check time between trades only if OpenTime > 0
-    if(OpenTime > 0 && currentTime - lastOpenTime < OpenTime)
+    // Définir l'état RSI en fonction des niveaux et de la logique choisie
+    if(RSILogic == RSI_CONTINUATION)
     {
-        return false;
-    }
-    
-    // Check price movements for new trades
-    double currentBid = SymbolInfoDouble(CurrentSymbol, SYMBOL_BID);
-    double currentAsk = SymbolInfoDouble(CurrentSymbol, SYMBOL_ASK);
-    
-    // Vérifier la tendance Supertrend
-    bool isSupertrendBullish = close1 > st[1];
-    bool isSupertrendBearish = close1 < st[1];
-    
-    // Appliquer le filtre Supertrend selon le mode choisi
-    if(SupertrendMode != SUPERTREND_DISABLED)
-    {
-        // Réinitialiser les prix de référence lors d'un changement de tendance
-        if(isSupertrendBullish && lastBuyPrice == 0)
-        {
-            lastSellPrice = 0; // Réinitialiser le prix de vente pour permettre de nouveaux achats
+        if(rsi[1] > RSIOverbought) {
+            lastRSIState = RSI_BULLISH;   // RSI > RSIOverbought = bullish
         }
-        else if(isSupertrendBearish && lastSellPrice == 0)
-        {
-            lastBuyPrice = 0; // Réinitialiser le prix d'achat pour permettre de nouvelles ventes
+        else if(rsi[1] < RSIOversold) {
+            lastRSIState = RSI_BEARISH;   // RSI < RSIOversold = bearish
+        }
+        else {
+            // Si dans la zone neutre, on garde le dernier état connu
+            lastRSIState = previousRSIState;
         }
     }
-    
-    // Vérifier si le trading est autorisé dans la direction actuelle
-    if(TradeDirection == TRADE_BUY_ONLY || TradeDirection == TRADE_BOTH)
+    else // RSI_REVERSAL
     {
-        // Pour les achats, vérifier les conditions de prix
-        bool canBuy = false;
-        
-        switch(PriceCondition)
-        {
-            case PRICE_CONDITION_BOTH:
-                // Pour les achats, on peut acheter si :
-                // 1. C'est le premier achat (lastBuyPrice == 0)
-                // 2. Le prix actuel est inférieur au dernier prix d'achat de PipsStep pips
-                // 3. Le prix actuel est supérieur au dernier prix de vente de PipsStep pips
-                canBuy = (lastBuyPrice == 0 || 
-                         (currentAsk <= lastBuyPrice - PipsStep * _Point &&
-                          (lastSellPrice == 0 || currentAsk >= lastSellPrice + PipsStep * _Point)));
-                break;
-                
-            case PRICE_CONDITION_ABOVE_BELOW:
-                // Pour les achats en mode ABOVE_BELOW, on achète uniquement si le prix est au-dessus
-                canBuy = (lastBuyPrice == 0 || currentAsk >= lastBuyPrice + PipsStep * _Point);
-                break;
+        if(rsi[1] > RSIOverbought) {
+            lastRSIState = RSI_BEARISH;   // RSI > RSIOverbought = bearish
         }
-        
-        if(canBuy)
-        {
-            lastBidPrice = currentBid;
-            lastOpenTime = currentTime;
-            return true;
+        else if(rsi[1] < RSIOversold) {
+            lastRSIState = RSI_BULLISH;   // RSI < RSIOversold = bullish
+        }
+        else {
+            // Si dans la zone neutre, on garde le dernier état connu
+            lastRSIState = previousRSIState;
         }
     }
     
-    if(TradeDirection == TRADE_SELL_ONLY || TradeDirection == TRADE_BOTH)
+    // Log des valeurs RSI et des états
+    string rsiStateStr = lastRSIState == RSI_BULLISH ? "Bullish" : "Bearish";
+    Print("DEBUG RSI - Values: ", rsi[1], 
+          " | RSI State: ", rsiStateStr,
+          " | Previous State: ", (previousRSIState == RSI_BULLISH ? "Bullish" : "Bearish"));
+    
+    // Si seul le RSI est activé
+    if(UseRSI && !UseSupertrend && !UseMA200)
     {
-        // Pour les ventes, vérifier les conditions de prix
-        bool canSell = false;
-        
-        switch(PriceCondition)
-        {
-            case PRICE_CONDITION_BOTH:
-                // Pour les ventes, on peut vendre si :
-                // 1. C'est la première vente (lastSellPrice == 0)
-                // 2. Le prix actuel est supérieur au dernier prix de vente de PipsStep pips
-                // 3. Le prix actuel est inférieur au dernier prix d'achat de PipsStep pips
-                canSell = (lastSellPrice == 0 || 
-                          (currentBid >= lastSellPrice + PipsStep * _Point &&
-                           (lastBuyPrice == 0 || currentBid <= lastBuyPrice - PipsStep * _Point)));
-                break;
-                
-            case PRICE_CONDITION_ABOVE_BELOW:
-                // Pour les ventes en mode ABOVE_BELOW, on vend uniquement si le prix est en-dessous
-                canSell = (lastSellPrice == 0 || currentBid <= lastSellPrice - PipsStep * _Point);
-                break;
-        }
-        
-        if(canSell)
-        {
-            lastBidPrice = currentBid;
-            lastOpenTime = currentTime;
-            return true;
-        }
+        conditions.canBuy = (lastRSIState == RSI_BULLISH);
+        conditions.canSell = (lastRSIState == RSI_BEARISH);
+    }
+    // Si tous les filtres sont activés
+    else if(UseSupertrend && UseMA200 && UseRSI)
+    {
+        conditions.canBuy = stBullish && maBullish && (lastRSIState == RSI_BULLISH);
+        conditions.canSell = stBearish && maBearish && (lastRSIState == RSI_BEARISH);
+    }
+    // Si Supertrend et MA sont activés
+    else if(UseSupertrend && UseMA200)
+    {
+        conditions.canBuy = stBullish && maBullish;
+        conditions.canSell = stBearish && maBearish;
+    }
+    // Si Supertrend et RSI sont activés
+    else if(UseSupertrend && UseRSI)
+    {
+        conditions.canBuy = stBullish && (lastRSIState == RSI_BULLISH);
+        conditions.canSell = stBearish && (lastRSIState == RSI_BEARISH);
+    }
+    // Si MA et RSI sont activés
+    else if(UseMA200 && UseRSI)
+    {
+        conditions.canBuy = maBullish && (lastRSIState == RSI_BULLISH);
+        conditions.canSell = maBearish && (lastRSIState == RSI_BEARISH);
+    }
+    // Si seul le Supertrend est activé
+    else if(UseSupertrend)
+    {
+        conditions.canBuy = stBullish;
+        conditions.canSell = stBearish;
+    }
+    // Si seule la MA 200 est activée
+    else if(UseMA200)
+    {
+        conditions.canBuy = maBullish;
+        conditions.canSell = maBearish;
+    }
+    // Si aucun filtre n'est activé
+    else
+    {
+        conditions.canBuy = true;
+        conditions.canSell = true;
     }
     
-    return false;
+    return conditions;
 }
 
 //+------------------------------------------------------------------+
@@ -632,31 +710,17 @@ void HandleTrailingStopsScalper()
     if(buyPositionCount > 0) buyAveragePrice /= buyTotalLots;
     if(sellPositionCount > 0) sellAveragePrice /= sellTotalLots;
    
-    // Récupération des valeurs Supertrend
-    double st[];
-    ArrayResize(st, 3);
-    ArraySetAsSeries(st, true);
-    if(CopyBuffer(stHandle, 0, 0, 3, st) <= 0) {
-        Print("Error copying Supertrend buffer in HandleTrailingStopsScalper");
-        return;
-    }
-   
     // Récupération des prix actuels
     double currentBid = SymbolInfoDouble(CurrentSymbol, SYMBOL_BID);
     double currentAsk = SymbolInfoDouble(CurrentSymbol, SYMBOL_ASK);
-    double currentClose = SymbolInfoDouble(CurrentSymbol, SYMBOL_LAST);
-   
-    // Vérification de la tendance Supertrend
-    bool isBullishTrend = currentClose > st[1];
-    bool isBearishTrend = currentClose < st[1];
    
     // Gestion des positions Buy
     if(buyPositionCount > 0) {
         // Vérification du trailing stop
-        if(Tral > 0 && TralStart > 0) {
-            double buyTrailingStop = buyAveragePrice + TralStart * _Point;
+        if(TrailingStopPips > 0 && TrailingStartPips > 0) {
+            double buyTrailingStop = buyAveragePrice + TrailingStartPips * _Point;
             if(currentBid > buyTrailingStop) {
-                double newSL = currentBid - Tral * _Point;
+                double newSL = currentBid - TrailingStopPips * _Point;
                 for(int i = PositionsTotal() - 1; i >= 0; i--) {
                     if(PositionSelectByTicket(PositionGetTicket(i))) {
                         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
@@ -695,10 +759,10 @@ void HandleTrailingStopsScalper()
     // Gestion des positions Sell
     if(sellPositionCount > 0) {
         // Vérification du trailing stop
-        if(Tral > 0 && TralStart > 0) {
-            double sellTrailingStop = sellAveragePrice - TralStart * _Point;
+        if(TrailingStopPips > 0 && TrailingStartPips > 0) {
+            double sellTrailingStop = sellAveragePrice - TrailingStartPips * _Point;
             if(currentAsk < sellTrailingStop) {
-                double newSL = currentAsk + Tral * _Point;
+                double newSL = currentAsk + TrailingStopPips * _Point;
                 for(int i = PositionsTotal() - 1; i >= 0; i--) {
                     if(PositionSelectByTicket(PositionGetTicket(i))) {
                         if(PositionGetInteger(POSITION_MAGIC) == Magic && 
@@ -736,27 +800,52 @@ void HandleTrailingStopsScalper()
 }
 
 //+------------------------------------------------------------------+
+//| Get Broker GMT Offset                                              |
+//+------------------------------------------------------------------+
+int GetBrokerGMTOffset()
+{
+    datetime serverTime = TimeCurrent();
+    datetime localTime = TimeLocal();
+    int offset = (int)((serverTime - localTime) / 3600);
+    return BrokerIsAheadOfGMT ? offset : -offset;
+}
+
+//+------------------------------------------------------------------+
+//| Adjust Time For Broker                                             |
+//+------------------------------------------------------------------+
+datetime AdjustTimeForBroker(datetime time)
+{
+    int offset = AutoDetectBrokerOffset ? GetBrokerGMTOffset() : ManualBrokerOffset;
+    return time + offset * 3600;
+}
+
+//+------------------------------------------------------------------+
 //| Check if current time is within trading hours                      |
 //+------------------------------------------------------------------+
 bool IsWithinTradingHours()
 {
-    datetime currentTime = TimeCurrent();
+    datetime currentTime = TimeCurrent();  // Server time
+    currentTime = AdjustTimeForBroker(currentTime);  // Adjust for broker offset
+    
     MqlDateTime time;
     TimeToStruct(currentTime, time);
     
-    // Convertir l'heure actuelle en minutes depuis minuit
-    int currentTimeInMinutes = time.hour * 60 + time.min;
+    int currentHour = time.hour;
+    int currentMinute = time.min;
+    
+    // Convert current time to minutes since midnight
+    int currentTimeInMinutes = currentHour * 60 + currentMinute;
     int startTimeInMinutes = TimeStartHour * 60 + TimeStartMinute;
     int endTimeInMinutes = TimeEndHour * 60 + TimeEndMinute;
     
     bool isWithinHours;
     
-    // Si la période de trading passe minuit
+    // If trading period crosses midnight
     if(endTimeInMinutes < startTimeInMinutes)
     {
         isWithinHours = (currentTimeInMinutes >= startTimeInMinutes || currentTimeInMinutes <= endTimeInMinutes);
     }
-    // Si la période de trading est dans la même journée
+    // If trading period is within the same day
     else
     {
         isWithinHours = (currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes <= endTimeInMinutes);
@@ -995,7 +1084,7 @@ bool IsDailyTargetReached()
 void ManagePositions()
 {
     // Vérifier le changement de direction de la Supertrend si le mode le permet
-    if(SupertrendMode == SUPERTREND_FILTER_AND_CLOSE)
+    if(UseSupertrend && SupertrendMode == SUPERTREND_FILTER_AND_CLOSE)
     {
         double st[];
         ArrayResize(st, 3);
@@ -1026,8 +1115,9 @@ void ManagePositions()
                         }
                     }
                 }
-                // Réinitialiser le dernier prix d'achat pour permettre de nouveaux achats
+                // Réinitialiser les deux prix de référence après fermeture des positions d'achat
                 lastBuyPrice = 0;
+                lastSellPrice = 0;
             }
             // Si la tendance est haussière, fermer toutes les positions de vente
             else if(isSupertrendBullish)
@@ -1045,8 +1135,100 @@ void ManagePositions()
                         }
                     }
                 }
-                // Réinitialiser le dernier prix de vente pour permettre de nouvelles ventes
+                // Réinitialiser les deux prix de référence après fermeture des positions de vente
+                lastBuyPrice = 0;
                 lastSellPrice = 0;
+            }
+        }
+    }
+
+    // Vérifier le changement de direction de la MA si le mode le permet
+    if(UseMA200 && MAMode == MA_FILTER_AND_CLOSE)
+    {
+        double ma[];
+        ArrayResize(ma, 3);
+        ArraySetAsSeries(ma, true);
+        
+        // Copier les valeurs de la MA
+        if(CopyBuffer(maHandle, 0, 0, 3, ma) > 0)
+        {
+            double close1 = iClose(CurrentSymbol, Timeframe, 1);
+            
+            // Vérifier la tendance actuelle
+            bool isMABullish = close1 > ma[1];
+            bool isMABearish = close1 < ma[1];
+            
+            // Si la tendance est baissière, fermer toutes les positions d'achat
+            if(isMABearish)
+            {
+                for(int i = PositionsTotal() - 1; i >= 0; i--)
+                {
+                    if(PositionSelectByTicket(PositionGetTicket(i)))
+                    {
+                        if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+                           PositionGetString(POSITION_SYMBOL) == CurrentSymbol &&
+                           PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+                        {
+                            trade.PositionClose(PositionGetTicket(i));
+                            Print("Position d'achat fermée suite au changement de tendance MA", true);
+                        }
+                    }
+                }
+                // Réinitialiser les deux prix de référence après fermeture des positions d'achat
+                lastBuyPrice = 0;
+                lastSellPrice = 0;
+            }
+            // Si la tendance est haussière, fermer toutes les positions de vente
+            else if(isMABullish)
+            {
+                for(int i = PositionsTotal() - 1; i >= 0; i--)
+                {
+                    if(PositionSelectByTicket(PositionGetTicket(i)))
+                    {
+                        if(PositionGetInteger(POSITION_MAGIC) == Magic && 
+                           PositionGetString(POSITION_SYMBOL) == CurrentSymbol &&
+                           PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+                        {
+                            trade.PositionClose(PositionGetTicket(i));
+                            Print("Position de vente fermée suite au changement de tendance MA", true);
+                        }
+                    }
+                }
+                // Réinitialiser les deux prix de référence après fermeture des positions de vente
+                lastBuyPrice = 0;
+                lastSellPrice = 0;
+            }
+        }
+    }
+
+    // Vérifier le changement de direction du RSI si le mode le permet
+    if(UseRSI && RSIMode == RSI_FILTER_AND_CLOSE)
+    {
+        double rsi[];
+        ArrayResize(rsi, 2);
+        ArraySetAsSeries(rsi, true);
+        
+        if(CopyBuffer(rsiHandle, 0, 0, 2, rsi) > 0)
+        {
+            bool isInBuyZone = rsi[1] >= RSIOversold;    // RSI actuel au-dessus de 50
+            bool isInSellZone = rsi[1] <= RSIOverbought; // RSI actuel en-dessous de 50
+            
+            // Fermer les positions BUY si RSI passe en-dessous de 50
+            if(!isInBuyZone)
+            {
+                CloseAllBuyPositions();
+                lastBuyPrice = 0;
+                lastSellPrice = 0;
+                Print("Fermeture des positions BUY - RSI passe en-dessous de ", RSIOversold, " (", rsi[1], ")");
+            }
+            
+            // Fermer les positions SELL si RSI passe au-dessus de 50
+            if(!isInSellZone)
+            {
+                CloseAllSellPositions();
+                lastBuyPrice = 0;
+                lastSellPrice = 0;
+                Print("Fermeture des positions SELL - RSI passe au-dessus de ", RSIOverbought, " (", rsi[1], ")");
             }
         }
     }
@@ -1066,95 +1248,3 @@ void OpenPosition(bool isBuy)
         OpenSellOrder();
 }
 
-//+------------------------------------------------------------------+
-//| Expert tick function                                               |
-//+------------------------------------------------------------------+
-void OnTick()
-{
-    // Vérifier si le spread est acceptable
-    double currentSpread = SymbolInfoInteger(CurrentSymbol, SYMBOL_SPREAD) * Point();
-    if(currentSpread > MaxSpread)
-    {
-        Print("SPREAD TROP ÉLEVÉ: ", currentSpread, " > ", MaxSpread);
-        return;
-    }
-    
-    // Vérifier si l'objectif quotidien est atteint
-    if(IsDailyTargetReached())
-    {
-        Print("OBJECTIF QUOTIDIEN ATTEINT - Fermeture des positions");
-        CloseAllBuyPositions();
-        CloseAllSellPositions();
-        return;
-    }
-    
-    // Gérer les trailing stops et les positions existantes
-    HandleTrailingStopsScalper();
-    ManagePositions();
-    
-    // Vérifier si on est dans les heures de trading uniquement pour les nouvelles entrées
-    if(!IsWithinTradingHours())
-    {
-        return; // Sortir après avoir géré les positions existantes
-    }
-    
-    // Le reste du code pour les nouvelles entrées
-    int bars = iBars(CurrentSymbol, Timeframe);
-    if(totalBars != bars)
-    {
-        totalBars = bars;
-        
-        double st[];
-        ArrayResize(st, 3);
-        ArraySetAsSeries(st, true);
-        
-        // Copy Supertrend buffer with retry
-        int maxRetries = 5;
-        int retryDelay = 100; // milliseconds
-        int copied = 0;
-        
-        for(int retry = 0; retry < maxRetries; retry++)
-        {
-            copied = CopyBuffer(stHandle, 0, 0, 3, st);
-            if(copied > 0) break;
-            Sleep(retryDelay);
-        }
-        
-        if(copied <= 0)
-        {
-            Print("Error copying Supertrend buffer. Error code: " + IntegerToString(GetLastError()));
-            return;
-        }
-        
-        double close1 = iClose(CurrentSymbol, Timeframe, 1);
-        double close2 = iClose(CurrentSymbol, Timeframe, 2);
-        
-        if(close1 == 0 || close2 == 0)
-        {
-            Print("Error getting close prices");
-            return;
-        }
-        
-        // Vérifier la tendance Supertrend
-        bool isSupertrendBullish = close1 > st[1];
-        bool isSupertrendBearish = close1 < st[1];
-        
-        // Vérifier les conditions d'entrée une seule fois
-        bool canTrade = CheckScalperEntryConditions(st, close1);
-        
-        // Ouvrir de nouvelles positions si les conditions sont remplies
-        if(canTrade && IsTradeAllowed(true))
-        {
-            if(SupertrendMode == SUPERTREND_DISABLED || 
-               (SupertrendMode != SUPERTREND_DISABLED && isSupertrendBullish))
-            {
-                OpenPosition(true);
-            }
-            else if(SupertrendMode == SUPERTREND_DISABLED || 
-                    (SupertrendMode != SUPERTREND_DISABLED && isSupertrendBearish))
-            {
-                OpenPosition(false);
-            }
-        }
-    }
-} 
