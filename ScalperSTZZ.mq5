@@ -90,6 +90,13 @@ input int RSIPeriod = 14;             // Période du RSI
 input int RSIOverbought = 70;         // Niveau de surachat
 input int RSIOversold = 30;           // Niveau de survente
 
+// === ADX Filter Settings ===
+input group "=== ADX Filter Settings ==="
+input bool    UseADX = true;          // Utiliser le filtre ADX
+input int ADXPeriod = 14;             // Période de l'ADX
+input int ADXMinLevel = 25;           // Niveau minimum de l'ADX
+input int ADXMaxLevel = 50;           // Niveau maximum de l'ADX
+
 // === Position Size Settings ===
 input group "=== Position Size Settings ==="
 input ENUM_LOT_TYPE LotType = LOT_TYPE_CURRENCY;  // Lot size type
@@ -146,6 +153,7 @@ string CurrentSymbol;                 // Current symbol
 int stHandle;                         // Supertrend indicator handle
 int maHandle;                         // MA 200 indicator handle
 int rsiHandle;                        // RSI indicator handle
+int adxHandle;                        // ADX indicator handle
 int totalBars;                        // Total number of bars
 double lotSize;                       // Lot size
 
@@ -179,11 +187,6 @@ struct TradingConditions {
 //+------------------------------------------------------------------+
 int OnInit()
 {
-    // Test message at startup
-    Print("=== ScalperSTZZ Initialization ===");
-    Print("Current Symbol: ", Symbol());
-    Print("Trading Hours: ", TimeStartHour, ":", TimeStartMinute, " - ", TimeEndHour, ":", TimeEndMinute);
-    
     // Initialize current symbol
     CurrentSymbol = Symbol();
     
@@ -235,6 +238,16 @@ int OnInit()
         return(INIT_FAILED);
     }
     
+    // Initialize ADX
+    adxHandle = iADX(CurrentSymbol, Timeframe, ADXPeriod);
+    
+    // Check if ADX is initialized successfully
+    if(adxHandle == INVALID_HANDLE)
+    {
+        Print("Error initializing ADX indicator. Error code: " + IntegerToString(GetLastError()));
+        return(INIT_FAILED);
+    }
+    
     totalBars = iBars(CurrentSymbol, Timeframe);
     lotSize = LotSize;
     
@@ -252,6 +265,8 @@ void OnDeinit(const int reason)
         IndicatorRelease(maHandle);
     if(rsiHandle != INVALID_HANDLE)
         IndicatorRelease(rsiHandle);
+    if(adxHandle != INVALID_HANDLE)
+        IndicatorRelease(adxHandle);
 }
 
 //+------------------------------------------------------------------+
@@ -262,21 +277,20 @@ void OnTick()
     // Vérifier si on est dans les heures de trading AVANT toute opération
     if(!IsWithinTradingHours())
     {
-        return; // Sortir immédiatement sans faire aucune opération
+        return;
     }
     
     // Vérifier si le spread est acceptable
     double currentSpread = SymbolInfoInteger(CurrentSymbol, SYMBOL_SPREAD) * Point();
     if(currentSpread > MaxSpread)
     {
-        Print("SPREAD TROP ÉLEVÉ: ", currentSpread, " > ", MaxSpread);
+        Print("Error: Spread too high: ", currentSpread, " > ", MaxSpread);
         return;
     }
     
     // Vérifier si l'objectif quotidien est atteint
     if(IsDailyTargetReached())
     {
-        Print("OBJECTIF QUOTIDIEN ATTEINT - Fermeture des positions");
         CloseAllBuyPositions();
         CloseAllSellPositions();
         return;
@@ -384,6 +398,20 @@ TradingConditions CheckScalperEntryConditions(double &st[], double &ma[], double
         return conditions;
     }
     
+    // Vérifier les conditions de l'ADX
+    double adx[];
+    ArrayResize(adx, 3);
+    ArraySetAsSeries(adx, true);
+    
+    if(CopyBuffer(adxHandle, 0, 0, 3, adx) <= 0)
+    {
+        Print("Error copying ADX buffer");
+        return conditions;
+    }
+    
+    // Vérifier si l'ADX est dans l'intervalle autorisé
+    bool adxInRange = (adx[1] >= ADXMinLevel && adx[1] <= ADXMaxLevel);
+    
     // Définir l'état RSI en fonction des niveaux et de la logique choisie
     if(RSILogic == RSI_CONTINUATION)
     {
@@ -412,23 +440,35 @@ TradingConditions CheckScalperEntryConditions(double &st[], double &ma[], double
         }
     }
     
-    // Log des valeurs RSI et des états
-    string rsiStateStr = lastRSIState == RSI_BULLISH ? "Bullish" : "Bearish";
-    Print("DEBUG RSI - Values: ", rsi[1], 
-          " | RSI State: ", rsiStateStr,
-          " | Previous State: ", (previousRSIState == RSI_BULLISH ? "Bullish" : "Bearish"));
-    
     // Si seul le RSI est activé
-    if(UseRSI && !UseSupertrend && !UseMA200)
+    if(UseRSI && !UseSupertrend && !UseMA200 && !UseADX)
     {
         conditions.canBuy = (lastRSIState == RSI_BULLISH);
         conditions.canSell = (lastRSIState == RSI_BEARISH);
     }
     // Si tous les filtres sont activés
-    else if(UseSupertrend && UseMA200 && UseRSI)
+    else if(UseSupertrend && UseMA200 && UseRSI && UseADX)
     {
-        conditions.canBuy = stBullish && maBullish && (lastRSIState == RSI_BULLISH);
-        conditions.canSell = stBearish && maBearish && (lastRSIState == RSI_BEARISH);
+        conditions.canBuy = stBullish && maBullish && (lastRSIState == RSI_BULLISH) && adxInRange;
+        conditions.canSell = stBearish && maBearish && (lastRSIState == RSI_BEARISH) && adxInRange;
+    }
+    // Si Supertrend, MA et ADX sont activés
+    else if(UseSupertrend && UseMA200 && UseADX)
+    {
+        conditions.canBuy = stBullish && maBullish && adxInRange;
+        conditions.canSell = stBearish && maBearish && adxInRange;
+    }
+    // Si Supertrend, RSI et ADX sont activés
+    else if(UseSupertrend && UseRSI && UseADX)
+    {
+        conditions.canBuy = stBullish && (lastRSIState == RSI_BULLISH) && adxInRange;
+        conditions.canSell = stBearish && (lastRSIState == RSI_BEARISH) && adxInRange;
+    }
+    // Si MA, RSI et ADX sont activés
+    else if(UseMA200 && UseRSI && UseADX)
+    {
+        conditions.canBuy = maBullish && (lastRSIState == RSI_BULLISH) && adxInRange;
+        conditions.canSell = maBearish && (lastRSIState == RSI_BEARISH) && adxInRange;
     }
     // Si Supertrend et MA sont activés
     else if(UseSupertrend && UseMA200)
@@ -460,6 +500,12 @@ TradingConditions CheckScalperEntryConditions(double &st[], double &ma[], double
         conditions.canBuy = maBullish;
         conditions.canSell = maBearish;
     }
+    // Si seul l'ADX est activé
+    else if(UseADX)
+    {
+        conditions.canBuy = adxInRange;
+        conditions.canSell = adxInRange;
+    }
     // Si aucun filtre n'est activé
     else
     {
@@ -476,7 +522,7 @@ TradingConditions CheckScalperEntryConditions(double &st[], double &ma[], double
 void OpenBuyOrder()
 {
     if(TradeDirection == TRADE_SELL_ONLY) {
-        LogMessage("OpenBuyOrder - Trading direction ne permet pas les achats", true);
+        Print("OpenBuyOrder - Trading direction ne permet pas les achats");
         return;
     }
     
@@ -495,7 +541,7 @@ void OpenBuyOrder()
             
             if(!trade.Buy(lotSize, CurrentSymbol, 0, sl, tp, "Buy Order"))
             {
-                LogMessage("OpenBuyOrder - Échec de l'ordre. Erreur: " + IntegerToString(GetLastError()), true);
+                Print("OpenBuyOrder - Échec de l'ordre. Erreur: " + IntegerToString(GetLastError()));
             }
             else
             {
@@ -511,7 +557,7 @@ void OpenBuyOrder()
 void OpenSellOrder()
 {
     if(TradeDirection == TRADE_BUY_ONLY) {
-        LogMessage("OpenSellOrder - Trading direction ne permet pas les ventes", true);
+        Print("OpenSellOrder - Trading direction ne permet pas les ventes");
         return;
     }
     
@@ -530,7 +576,7 @@ void OpenSellOrder()
             
             if(!trade.Sell(lotSize, CurrentSymbol, 0, sl, tp, "Sell Order"))
             {
-                LogMessage("OpenSellOrder - Échec de l'ordre. Erreur: " + IntegerToString(GetLastError()), true);
+                Print("OpenSellOrder - Échec de l'ordre. Erreur: " + IntegerToString(GetLastError()));
             }
             else
             {
@@ -855,29 +901,6 @@ bool IsWithinTradingHours()
 }
 
 //+------------------------------------------------------------------+
-//| Log Management                                                     |
-//+------------------------------------------------------------------+
-void LogMessage(string message, bool forceLog = false)
-{
-    if(!forceLog) return; // Only log errors
-    
-    datetime currentTime = TimeCurrent();
-    string log = TimeToString(currentTime, TIME_DATE|TIME_MINUTES|TIME_SECONDS) + " | " + message;
-    
-    // Force print to MetaTrader journal
-    Print(log);
-    
-    // Write to file
-    int handle = FileOpen("ScalperSTZZ_Log.txt", FILE_WRITE|FILE_READ|FILE_TXT|FILE_COMMON);
-    if(handle != INVALID_HANDLE)
-    {
-        FileSeek(handle, 0, SEEK_END);
-        FileWrite(handle, log);
-        FileClose(handle);
-    }
-}
-
-//+------------------------------------------------------------------+
 //| Check if trade is allowed based on limits                         |
 //+------------------------------------------------------------------+
 bool IsTradeAllowed(bool isBuy)
@@ -1111,7 +1134,6 @@ void ManagePositions()
                            PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
                         {
                             trade.PositionClose(PositionGetTicket(i));
-                            Print("Position d'achat fermée suite au changement de tendance Supertrend", true);
                         }
                     }
                 }
@@ -1131,7 +1153,6 @@ void ManagePositions()
                            PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
                         {
                             trade.PositionClose(PositionGetTicket(i));
-                            Print("Position de vente fermée suite au changement de tendance Supertrend", true);
                         }
                     }
                 }
@@ -1170,7 +1191,6 @@ void ManagePositions()
                            PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
                         {
                             trade.PositionClose(PositionGetTicket(i));
-                            Print("Position d'achat fermée suite au changement de tendance MA", true);
                         }
                     }
                 }
@@ -1190,7 +1210,6 @@ void ManagePositions()
                            PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
                         {
                             trade.PositionClose(PositionGetTicket(i));
-                            Print("Position de vente fermée suite au changement de tendance MA", true);
                         }
                     }
                 }
@@ -1219,7 +1238,6 @@ void ManagePositions()
                 CloseAllBuyPositions();
                 lastBuyPrice = 0;
                 lastSellPrice = 0;
-                Print("Fermeture des positions BUY - RSI passe en-dessous de ", RSIOversold, " (", rsi[1], ")");
             }
             
             // Fermer les positions SELL si RSI passe au-dessus de 50
@@ -1228,7 +1246,6 @@ void ManagePositions()
                 CloseAllSellPositions();
                 lastBuyPrice = 0;
                 lastSellPrice = 0;
-                Print("Fermeture des positions SELL - RSI passe au-dessus de ", RSIOverbought, " (", rsi[1], ")");
             }
         }
     }
